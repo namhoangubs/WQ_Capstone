@@ -1,0 +1,12 @@
+numpy
+pandas
+matplotlib
+scipy
+scikit-learn
+statsmodels
+seaborn
+networkx
+hmmlearn
+tensorflow
+keras
+powerlaw

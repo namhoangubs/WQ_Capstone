@@ -104,6 +104,69 @@ New selector rows: 2
 
 This does not change the HMM-WGAN method from the publication. It makes the implementation more deterministic and easier to defend.
 
+## Dynamic Transition Experiment - HMM Only
+
+The capstone extension proposes improving only the regime-transition layer first, without touching WGAN. To keep this clean, the new transition experiment is separated into its own modules.
+
+| New File | Responsibility | Comparison To Baseline |
+|---|---|---|
+| `p1_3_transition_features.py` | Builds supervised transition features from HMM states, exogenous-return lags, regime duration, and state-duration interactions. | The old code used only the current regime and the fixed HMM transition matrix. |
+| `p1_4_dynamic_transition.py` | Trains and evaluates a dynamic multinomial logistic transition model. | Compares dynamic `P(q[t+1] | features at t)` against fixed `A[q[t]]`. |
+| `benchmark_dynamic_transition.py` | Runs the HMM-only benchmark for `q2` and `q4`. | Produces fixed-vs-dynamic metrics without retraining WGAN. |
+| `p1_5_transition_comparison.py` | Creates transition-matrix comparison tables and graphs. | Visualizes observed validation transitions, old fixed HMM transitions, new dynamic average transitions, and metric differences. |
+
+This experiment evaluates only regime transitions:
+
+```text
+current regime + lagged regimes + exogenous returns + duration
+-> predicted next regime
+```
+
+It does **not** train WGAN, load WGAN weights, or generate synthetic stock returns.
+
+Run:
+
+```powershell
+python benchmark_dynamic_transition.py
+```
+
+Outputs are saved under `phase_1/`:
+
+```text
+dynamic_transition_report_q2.csv
+dynamic_transition_report_q4.csv
+```
+
+To visualize how the transition behavior changes:
+
+```powershell
+python p1_5_transition_comparison.py
+```
+
+Outputs are saved under `phase_1/transition_comparison/`:
+
+```text
+transition_matrix_summary.csv
+transition_matrix_fixed_only_q1.png
+transition_matrix_comparison_q2.png
+transition_matrix_comparison_q4.png
+duration_stay_probability_q2.png
+duration_stay_probability_q4.png
+transition_log_loss_delta_grid.png
+transition_brier_score_delta_grid.png
+```
+
+Important: the dynamic model does not have one fixed transition matrix. For comparison, the script reports the average dynamic transition probabilities on the validation period, grouped by current HMM state.
+
+Initial benchmark result on the existing Phase 1 labels:
+
+| Setup | Fixed HMM Log-Loss | Best Dynamic Log-Loss | Interpretation |
+|---|---:|---:|---|
+| `q2` | `0.209130` | `0.261071` | Fixed transition is still better on this validation split. |
+| `q4` | `0.859193` | `0.570078` | Dynamic transition improves next-regime probability prediction. |
+
+This is why the extension should be validated at the transition layer before being connected to WGAN.
+
 ## Repository Structure
 
 | Path | Description |
@@ -119,6 +182,7 @@ This does not change the HMM-WGAN method from the publication. It makes the impl
 | `project_config.py` | Shared portable project path configuration. |
 | `requirements.txt` | Python dependencies. |
 | `benchmark_hmm_selection.py` | Old-vs-new HMM selector benchmark. |
+| `p1_5_transition_comparison.py` | HMM transition comparison graph generator. |
 
 Generated data, model weights, PDFs, zip files, virtual environments, and caches are intentionally excluded from Git by `.gitignore`.
 
@@ -200,6 +264,20 @@ python p1_2_hmm.py
 ```
 
 This regenerates HMM-labeled stock-return files and transition matrices in `phase_1/`.
+
+### 5. Visualize fixed-vs-dynamic transitions
+
+This does not train WGAN. It compares the old fixed HMM transition matrix with the new dynamic transition model.
+
+```powershell
+python p1_5_transition_comparison.py
+```
+
+Open the generated images in:
+
+```text
+phase_1\transition_comparison\
+```
 
 ## Running The Full Pipeline
 

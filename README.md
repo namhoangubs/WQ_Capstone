@@ -165,6 +165,34 @@ Initial benchmark result on the existing Phase 1 labels:
 | `q2` | `0.209130` | `0.261071` | Fixed transition is still better on this validation split. |
 | `q4` | `0.859193` | `0.570078` | Dynamic transition improves next-regime probability prediction. |
 
+### HMM Transition Result Snapshots
+
+The full `phase_1/` output folder is ignored by Git because it is generated data. Important result snapshots are copied into `docs/hmm_transition_results/` so they are visible on GitHub.
+
+Summary table:
+
+```text
+docs/hmm_transition_results/transition_matrix_summary.csv
+```
+
+Old fixed HMM versus new dynamic average transition matrices:
+
+![q2 transition matrix comparison](docs/hmm_transition_results/transition_matrix_comparison_q2.png)
+
+![q4 transition matrix comparison](docs/hmm_transition_results/transition_matrix_comparison_q4.png)
+
+Duration-dependent stay probabilities:
+
+![q2 duration stay probability](docs/hmm_transition_results/duration_stay_probability_q2.png)
+
+![q4 duration stay probability](docs/hmm_transition_results/duration_stay_probability_q4.png)
+
+Metric deltas across lag settings:
+
+![transition log-loss delta grid](docs/hmm_transition_results/transition_log_loss_delta_grid.png)
+
+![transition brier score delta grid](docs/hmm_transition_results/transition_brier_score_delta_grid.png)
+
 This is why the extension should be validated at the transition layer before being connected to WGAN.
 
 ## Repository Structure
@@ -179,6 +207,7 @@ This is why the extension should be validated at the transition layer before bei
 | `simulations/` | Simulated returns. Ignored by Git. |
 | `stylized_facts/` | Diagnostic plots and text outputs. Ignored by Git. |
 | `risk_management/` | VaR outputs. Ignored by Git. |
+| `docs/hmm_transition_results/` | GitHub-visible snapshots of selected HMM transition comparison results. |
 | `project_config.py` | Shared portable project path configuration. |
 | `requirements.txt` | Python dependencies. |
 | `benchmark_hmm_selection.py` | Old-vs-new HMM selector benchmark. |

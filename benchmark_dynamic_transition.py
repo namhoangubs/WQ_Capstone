@@ -1,22 +1,26 @@
-from p1_4_dynamic_transition import save_dynamic_transition_report
+from p1_4_dynamic_transition import TRAIN_END, VALIDATION_END, save_dynamic_transition_report
 
 
 def main():
+    print(f'Train window (both models): start of data to {TRAIN_END}')
+    print(f'Validation window (lag selection only): {TRAIN_END} to {VALIDATION_END}')
+    print(f'Prediction window (final comparison): {VALIDATION_END} onward')
+
     for n_states in [2, 4]:
         report, output_path = save_dynamic_transition_report(n_states=n_states)
-        best_dynamic = report[report.MODEL == 'dynamic_duration_logit'].sort_values('LOG_LOSS').head(1)
-        comparable_fixed = report[
-            (report.MODEL == 'fixed_hmm_transition')
-            & (report.STATE_LAG == int(best_dynamic.STATE_LAG.iloc[0]))
-            & (report.EXOG_LAG == int(best_dynamic.EXOG_LAG.iloc[0]))
-        ]
+
+        validation_rows = report[(report.MODEL == 'dynamic_duration_logit') & (report.SPLIT == 'validation')]
+        best_dynamic = validation_rows.sort_values('LOG_LOSS').head(1)
+        state_lag = int(best_dynamic.STATE_LAG.iloc[0])
+        exog_lag = int(best_dynamic.EXOG_LAG.iloc[0])
+
+        selected = report[(report.STATE_LAG == state_lag) & (report.EXOG_LAG == exog_lag)]
 
         print(f'\nN_STATES={n_states}')
         print(f'Report saved to: {output_path}')
-        print('Best dynamic transition model:')
-        print(best_dynamic.to_string(index=False))
-        print('Fixed transition baseline on same validation rows:')
-        print(comparable_fixed.to_string(index=False))
+        print(f'Best lag config by validation log loss: state_lag={state_lag}, exog_lag={exog_lag}')
+        print('Fixed versus dynamic at that config (prediction split is the out-of-sample comparison):')
+        print(selected.to_string(index=False))
 
 
 if __name__ == '__main__':

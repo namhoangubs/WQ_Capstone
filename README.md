@@ -113,7 +113,8 @@ The capstone extension proposes improving only the regime-transition layer first
 | `p1_3_transition_features.py` | Builds supervised transition features from HMM states, exogenous-return lags, regime duration, and state-duration interactions. | The old code used only the current regime and the fixed HMM transition matrix. |
 | `p1_4_dynamic_transition.py` | Trains and evaluates a dynamic multinomial logistic transition model. | Compares dynamic `P(q[t+1] | features at t)` against fixed `A[q[t]]`. |
 | `benchmark_dynamic_transition.py` | Runs the HMM-only benchmark for `q2` and `q4`. | Produces fixed-vs-dynamic metrics without retraining WGAN. |
-| `p1_5_transition_comparison.py` | Creates transition-matrix comparison tables and graphs. | Visualizes observed validation transitions, old fixed HMM transitions, new dynamic average transitions, and metric differences. |
+| `p1_5_transition_comparison.py` | Creates transition-matrix comparison tables and graphs. | Visualizes observed transitions, fixed HMM transitions, dynamic average transitions, and metric differences. |
+| `p1_6_duration_hazard.py` | Fits a duration-hazard scheme where exit probability is forced to rise with time spent in a regime. | Tests the "regimes age" hypothesis against the fixed HMM. |
 
 This experiment evaluates only regime transitions:
 
@@ -124,74 +125,136 @@ current regime + lagged regimes + exogenous returns + duration
 
 It does **not** train WGAN, load WGAN weights, or generate synthetic stock returns.
 
+### Train, Validation, And Prediction Windows
+
+Every transition model is evaluated with the same explicit date-based split. The train cutoff matches `TRAIN_DATE` in `p1_2_hmm.py`, so the fixed HMM and every new model carry exactly the same information set. Nothing after the train cutoff is used for fitting, and the prediction window is never used for fitting or model selection.
+
+| Split | Dates | Rows (q4) | Used For |
+|---|---|---:|---|
+| Train | 2000-01-03 to 2009-06-01 | 2,318 | Fitting the fixed HMM (Baum-Welch), the dynamic logit, and the hazard betas. |
+| Validation | 2009-06-02 to 2016-12-30 | 1,890 | Selecting the lag configuration of the dynamic logit. Nothing else. |
+| Prediction | 2017-01-03 to 2023-12-05 | 1,730 | The final out-of-sample comparison reported below. |
+
+Every row of every report CSV carries a `SPLIT` column plus `SPLIT_START` and `SPLIT_END` dates, so it is always visible which window a metric belongs to.
+
+### Model 1: Dynamic Multinomial Logit
+
+`p1_4_dynamic_transition.py` fits a standardized multinomial logistic regression on the train window using state dummies, lagged exogenous returns, regime duration, and duration-state interactions. Class weighting is **not** used: an earlier version used `class_weight='balanced'`, which inflated rare-regime transition probabilities by up to 20x versus observed frequencies and made the Brier score worse than the fixed baseline. Removing it fixed calibration.
+
 Run:
 
 ```powershell
 python benchmark_dynamic_transition.py
 ```
 
-Outputs are saved under `phase_1/`:
+Result on the prediction window (2017-2023, out-of-sample for both models, lags chosen on validation only):
+
+| Setup | Metric | Fixed HMM | Dynamic Logit | Interpretation |
+|---|---|---:|---:|---|
+| `q2` | Log-loss | `0.181` | `0.187` | No improvement for the 2-state HMM. |
+| `q4` | Log-loss | `0.752` | `0.497` | Clear improvement in next-regime probability quality. |
+| `q4` | Accuracy | `0.874` | `0.872` | Essentially tied. |
+| `q4` | Brier score | `0.226` | `0.227` | Essentially tied; calibration is healthy. |
+
+The lag grid also shows that lagged state dummies add nothing (identical log-loss for `STATE_LAG` 0, 1, 2): the predictive signal comes from duration and same-day exogenous returns.
+
+### Model 2: Duration-Hazard Scheme (Rejected By The Data)
+
+`p1_6_duration_hazard.py` tests the economic intuition that regimes "age": the longer the market has stayed in a regime, the more likely it should be to exit. The scheme keeps the fixed HMM matrix as the base and adds a hazard on the diagonal:
+
+```text
+logit(P_stay(state i, duration d)) = logit(P_ii_fixed) - beta_i * ln(d),  beta_i >= 0
+```
+
+`beta_i = 0` recovers the fixed HMM exactly. Betas are fitted by maximum likelihood on the train window only.
+
+Run:
+
+```powershell
+python p1_6_duration_hazard.py
+```
+
+Result: **the maximum-likelihood fit pushes every beta to the zero boundary** for both `q2` and `q4`, so the best allowed version of the scheme is identical to the fixed HMM. When the constraint is removed as a diagnostic, every state prefers a **negative** beta (q4: -0.26, -0.18, -0.08, -0.14), and forcing positive betas strictly worsens the out-of-sample log-loss (q4 prediction window: `0.752` at beta 0, `0.767` at beta 0.25, `0.828` at beta 0.5).
+
+The reason is visible in the observed data: the empirical probability of staying **rises** with duration in every state (q4 state 0: about 0.73 on day 1 up to about 0.97 after 60+ days). Day-one spells contain many one-day regime flickers that immediately revert, while long-lived spells are the most stable. Daily HMM regime labels therefore show a *decreasing* exit hazard, which is the opposite of the aging intuition, and no `beta >= 0` can fit an upward-sloping stay curve.
+
+Conclusion: duration **is** predictive, but in the direction of persistence, not exit. The dynamic logit exploits this correctly and beats the fixed HMM on `q4`; the imposed rising-exit-hazard scheme cannot beat the fixed HMM because it fights the data. If the practical goal is to prevent unrealistically long simulated regimes in Phase 3, that is better handled with an explicit duration cap in the simulator than by distorting the estimated transition probabilities.
+
+### Reproducing The Comparison Outputs
+
+```powershell
+python benchmark_dynamic_transition.py
+python p1_5_transition_comparison.py
+python p1_6_duration_hazard.py
+```
+
+Reports are saved under `phase_1/`:
 
 ```text
 dynamic_transition_report_q2.csv
 dynamic_transition_report_q4.csv
+duration_hazard_report_q2.csv
+duration_hazard_report_q4.csv
+duration_hazard_betas.csv
 ```
 
-To visualize how the transition behavior changes:
-
-```powershell
-python p1_5_transition_comparison.py
-```
-
-Outputs are saved under `phase_1/transition_comparison/`:
+Graphs and matrix tables are saved under `phase_1/transition_comparison/`:
 
 ```text
 transition_matrix_summary.csv
+duration_hazard_matrix_summary.csv
 transition_matrix_fixed_only_q1.png
 transition_matrix_comparison_q2.png
 transition_matrix_comparison_q4.png
+transition_matrix_hazard_q2.png
+transition_matrix_hazard_q4.png
 duration_stay_probability_q2.png
 duration_stay_probability_q4.png
-transition_log_loss_delta_grid.png
-transition_brier_score_delta_grid.png
+duration_hazard_stay_q2.png
+duration_hazard_stay_q4.png
+transition_log_loss_delta_grid_validation.png
+transition_log_loss_delta_grid_prediction.png
+transition_brier_score_delta_grid_validation.png
+transition_brier_score_delta_grid_prediction.png
 ```
 
-Important: the dynamic model does not have one fixed transition matrix. For comparison, the script reports the average dynamic transition probabilities on the validation period, grouped by current HMM state.
-
-Initial benchmark result on the existing Phase 1 labels:
-
-| Setup | Fixed HMM Log-Loss | Best Dynamic Log-Loss | Interpretation |
-|---|---:|---:|---|
-| `q2` | `0.209130` | `0.261071` | Fixed transition is still better on this validation split. |
-| `q4` | `0.859193` | `0.570078` | Dynamic transition improves next-regime probability prediction. |
+Important: the dynamic models do not have one fixed transition matrix. For comparison, the scripts report the average predicted transition probabilities on the prediction window, grouped by current HMM state.
 
 ### HMM Transition Result Snapshots
 
 The full `phase_1/` output folder is ignored by Git because it is generated data. Important result snapshots are copied into `docs/hmm_transition_results/` so they are visible on GitHub.
 
-Summary table:
+Summary tables:
 
 ```text
 docs/hmm_transition_results/transition_matrix_summary.csv
+docs/hmm_transition_results/duration_hazard_matrix_summary.csv
+docs/hmm_transition_results/duration_hazard_betas.csv
 ```
 
-Old fixed HMM versus new dynamic average transition matrices:
+Fixed HMM versus dynamic-logit average transition matrices on the prediction window:
 
 ![q2 transition matrix comparison](docs/hmm_transition_results/transition_matrix_comparison_q2.png)
 
 ![q4 transition matrix comparison](docs/hmm_transition_results/transition_matrix_comparison_q4.png)
 
-Duration-dependent stay probabilities:
+Dynamic-logit duration-dependent stay probabilities (prediction window):
 
 ![q2 duration stay probability](docs/hmm_transition_results/duration_stay_probability_q2.png)
 
 ![q4 duration stay probability](docs/hmm_transition_results/duration_stay_probability_q4.png)
 
-Metric deltas across lag settings:
+Duration-hazard scheme versus observed stay probabilities (the fitted betas are zero, so the hazard curve collapses onto the fixed HMM line while the observed curve rises):
 
-![transition log-loss delta grid](docs/hmm_transition_results/transition_log_loss_delta_grid.png)
+![q2 duration hazard stay probability](docs/hmm_transition_results/duration_hazard_stay_q2.png)
 
-![transition brier score delta grid](docs/hmm_transition_results/transition_brier_score_delta_grid.png)
+![q4 duration hazard stay probability](docs/hmm_transition_results/duration_hazard_stay_q4.png)
+
+Metric deltas across lag settings (validation is used for selection, prediction is the out-of-sample check):
+
+![transition log-loss delta grid validation](docs/hmm_transition_results/transition_log_loss_delta_grid_validation.png)
+
+![transition log-loss delta grid prediction](docs/hmm_transition_results/transition_log_loss_delta_grid_prediction.png)
 
 This is why the extension should be validated at the transition layer before being connected to WGAN.
 
@@ -212,6 +275,7 @@ This is why the extension should be validated at the transition layer before bei
 | `requirements.txt` | Python dependencies. |
 | `benchmark_hmm_selection.py` | Old-vs-new HMM selector benchmark. |
 | `p1_5_transition_comparison.py` | HMM transition comparison graph generator. |
+| `p1_6_duration_hazard.py` | Duration-hazard transition scheme fit and evaluation. |
 
 Generated data, model weights, PDFs, zip files, virtual environments, and caches are intentionally excluded from Git by `.gitignore`.
 

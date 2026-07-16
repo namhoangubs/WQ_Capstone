@@ -10,6 +10,8 @@ from pandas import DataFrame, cut, read_csv
 
 from p1_3_transition_features import build_transition_dataset
 from p1_4_dynamic_transition import (
+    TRAIN_END,
+    VALIDATION_END,
     _align_probabilities,
     fit_dynamic_transition_model,
     save_dynamic_transition_report,
@@ -18,7 +20,6 @@ from p1_4_dynamic_transition import (
 from project_config import BASE_DIR
 
 
-VALIDATION_FRACTION = 0.25
 OUTPUT_DIR = BASE_DIR / 'phase_1' / 'transition_comparison'
 
 
@@ -74,22 +75,24 @@ def average_probability_matrix(current_states, probabilities, state_classes):
     return matrix
 
 
-def simple_validation_observed_matrix(n_states, validation_fraction=VALIDATION_FRACTION):
+def prediction_window_observed_matrix(n_states):
     states = read_stock_states(n_states)
     current_states = states.iloc[:-1]
     next_states = states.shift(-1).dropna().astype(int)
-    split_index = int(len(current_states) * (1 - validation_fraction))
-    current_valid = current_states.iloc[split_index:].to_numpy(dtype=int)
-    next_valid = next_states.iloc[split_index:].to_numpy(dtype=int)
+    prediction_mask = current_states.index >= VALIDATION_END
+    current_prediction = current_states[prediction_mask].to_numpy(dtype=int)
+    next_prediction = next_states[prediction_mask].to_numpy(dtype=int)
     state_classes = sorted(states.dropna().unique())
 
-    return observed_transition_matrix(current_valid, next_valid, state_classes)
+    return observed_transition_matrix(current_prediction, next_prediction, state_classes)
 
 
 def load_or_create_dynamic_report(n_states):
     path = BASE_DIR / 'phase_1' / f'dynamic_transition_report_q{n_states}.csv'
     if path.exists():
-        return read_csv(path)
+        report = read_csv(path)
+        if 'SPLIT' in report.columns:
+            return report
 
     report, _ = save_dynamic_transition_report(n_states)
     return report
@@ -97,10 +100,13 @@ def load_or_create_dynamic_report(n_states):
 
 def best_dynamic_lag_config(n_states):
     report = load_or_create_dynamic_report(n_states)
-    dynamic_rows = report[report['MODEL'] == 'dynamic_duration_logit'].copy()
+    dynamic_rows = report[
+        (report['MODEL'] == 'dynamic_duration_logit')
+        & (report['SPLIT'] == 'validation')
+    ].copy()
 
     if dynamic_rows.empty:
-        raise ValueError(f'No dynamic transition rows found for q{n_states}.')
+        raise ValueError(f'No dynamic transition validation rows found for q{n_states}.')
 
     return dynamic_rows.sort_values(
         ['LOG_LOSS', 'BRIER_SCORE', 'STATE_LAG', 'EXOG_LAG'],
@@ -123,22 +129,22 @@ def dynamic_comparison_data(n_states):
         max_state_lag=state_lag,
         max_exog_lag=exog_lag,
     )
-    X_train, X_valid, y_train, y_valid, _, meta_valid = split_transition_dataset(
-        X, y, meta, validation_fraction=VALIDATION_FRACTION
-    )
+    splits = split_transition_dataset(X, y, meta)
+    X_train, y_train, _ = splits['train']
+    X_prediction, y_prediction, meta_prediction = splits['prediction']
 
     model = fit_dynamic_transition_model(X_train, y_train)
     logit = model.named_steps['logit']
     dynamic_probabilities = _align_probabilities(
-        model.predict_proba(X_valid),
+        model.predict_proba(X_prediction),
         logit.classes_,
         state_classes,
     )
 
-    current_valid = meta_valid['CURRENT_STATE'].to_numpy(dtype=int)
-    y_valid_values = y_valid.to_numpy(dtype=int)
-    observed_matrix = observed_transition_matrix(current_valid, y_valid_values, state_classes)
-    dynamic_matrix = average_probability_matrix(current_valid, dynamic_probabilities, state_classes)
+    current_prediction = meta_prediction['CURRENT_STATE'].to_numpy(dtype=int)
+    y_prediction_values = y_prediction.to_numpy(dtype=int)
+    observed_matrix = observed_transition_matrix(current_prediction, y_prediction_values, state_classes)
+    dynamic_matrix = average_probability_matrix(current_prediction, dynamic_probabilities, state_classes)
 
     return {
         'n_states': n_states,
@@ -148,9 +154,11 @@ def dynamic_comparison_data(n_states):
         'fixed_matrix': fixed_matrix.to_numpy(dtype=float),
         'observed_matrix': observed_matrix,
         'dynamic_matrix': dynamic_matrix,
-        'X_valid': X_valid,
-        'meta_valid': meta_valid,
+        'X_prediction': X_prediction,
+        'meta_prediction': meta_prediction,
         'dynamic_probabilities': dynamic_probabilities,
+        'prediction_start': X_prediction.index.min().date(),
+        'prediction_end': X_prediction.index.max().date(),
     }
 
 
@@ -172,9 +180,9 @@ def matrix_records(n_states, state_classes, fixed_matrix, observed_matrix, dynam
                 'N_STATES': n_states,
                 'FROM_STATE': from_state,
                 'TO_STATE': to_state,
-                'OBSERVED_VALIDATION': observed_value,
-                'OLD_FIXED_HMM': fixed_value,
-                'NEW_DYNAMIC_AVERAGE': dynamic_value,
+                'OBSERVED_PREDICTION': observed_value,
+                'FIXED_HMM': fixed_value,
+                'DYNAMIC_AVERAGE': dynamic_value,
                 'DYNAMIC_MINUS_FIXED': diff_value,
             })
 
@@ -220,13 +228,13 @@ def draw_heatmap(ax, matrix, title, state_classes, cmap='Blues', vmin=0, vmax=1,
 def plot_fixed_only_case(n_states, output_dir):
     state_classes = sorted(read_stock_states(n_states).dropna().unique())
     fixed_matrix = read_fixed_transition_matrix(n_states).to_numpy(dtype=float)
-    observed_matrix = simple_validation_observed_matrix(n_states)
+    observed_matrix = prediction_window_observed_matrix(n_states)
 
     fig, axes = plt.subplots(1, 2, figsize=(8, 3.5), constrained_layout=True)
-    image = draw_heatmap(axes[0], observed_matrix, 'Observed validation', state_classes)
-    draw_heatmap(axes[1], fixed_matrix, 'Old fixed HMM', state_classes)
+    image = draw_heatmap(axes[0], observed_matrix, 'Observed (prediction window)', state_classes)
+    draw_heatmap(axes[1], fixed_matrix, f'Fixed HMM (trained to {TRAIN_END})', state_classes)
     fig.colorbar(image, ax=axes, fraction=0.035, pad=0.03)
-    fig.suptitle(f'q{n_states}: fixed transition matrix only')
+    fig.suptitle(f'q{n_states}: fixed transition matrix only (prediction window from {VALIDATION_END})')
 
     path = output_dir / f'transition_matrix_fixed_only_q{n_states}.png'
     fig.savefig(path, dpi=160, bbox_inches='tight')
@@ -244,16 +252,16 @@ def plot_matrix_comparison(comparison, output_dir):
     diff_matrix = dynamic_matrix - fixed_matrix
 
     fig, axes = plt.subplots(1, 4, figsize=(17, 4.2), constrained_layout=True)
-    image = draw_heatmap(axes[0], observed_matrix, 'Observed validation', state_classes)
-    draw_heatmap(axes[1], fixed_matrix, 'Old fixed HMM', state_classes)
-    draw_heatmap(axes[2], dynamic_matrix, 'New dynamic average', state_classes)
+    image = draw_heatmap(axes[0], observed_matrix, 'Observed (prediction window)', state_classes)
+    draw_heatmap(axes[1], fixed_matrix, f'Fixed HMM (trained to {TRAIN_END})', state_classes)
+    draw_heatmap(axes[2], dynamic_matrix, f'Dynamic average (trained to {TRAIN_END})', state_classes)
 
     max_abs_diff = max(0.001, abs(diff_matrix[~isnan(diff_matrix)]).max())
     norm = TwoSlopeNorm(vmin=-max_abs_diff, vcenter=0, vmax=max_abs_diff)
     diff_image = draw_heatmap(
         axes[3],
         diff_matrix,
-        'New - old',
+        'Dynamic - fixed',
         state_classes,
         cmap='RdBu_r',
         norm=norm,
@@ -262,8 +270,9 @@ def plot_matrix_comparison(comparison, output_dir):
     fig.colorbar(image, ax=axes[:3], fraction=0.025, pad=0.02)
     fig.colorbar(diff_image, ax=axes[3], fraction=0.045, pad=0.04)
     fig.suptitle(
-        f"q{n_states}: transition matrices "
-        f"(best dynamic lags: state={comparison['state_lag']}, exog={comparison['exog_lag']})"
+        f"q{n_states}: transition matrices on prediction window "
+        f"{comparison['prediction_start']} to {comparison['prediction_end']} "
+        f"(lags selected on validation: state={comparison['state_lag']}, exog={comparison['exog_lag']})"
     )
 
     path = output_dir / f'transition_matrix_comparison_q{n_states}.png'
@@ -277,13 +286,13 @@ def plot_duration_stay_probability(comparison, output_dir):
     n_states = comparison['n_states']
     state_classes = comparison['state_classes']
     fixed_matrix = comparison['fixed_matrix']
-    X_valid = comparison['X_valid']
-    meta_valid = comparison['meta_valid']
+    X_prediction = comparison['X_prediction']
+    meta_prediction = comparison['meta_prediction']
     dynamic_probabilities = comparison['dynamic_probabilities']
 
     duration_bins = [0, 1, 2, 5, 10, 20, 60, inf]
     duration_labels = ['1', '2', '3-5', '6-10', '11-20', '21-60', '61+']
-    duration_bucket = cut(X_valid['DURATION'], bins=duration_bins, labels=duration_labels)
+    duration_bucket = cut(X_prediction['DURATION'], bins=duration_bins, labels=duration_labels)
 
     n_columns = min(2, len(state_classes))
     n_rows = int((len(state_classes) + n_columns - 1) / n_columns)
@@ -298,7 +307,7 @@ def plot_duration_stay_probability(comparison, output_dir):
 
     for index, current_state in enumerate(state_classes):
         ax = axes[index]
-        mask = meta_valid['CURRENT_STATE'].to_numpy(dtype=int) == current_state
+        mask = meta_prediction['CURRENT_STATE'].to_numpy(dtype=int) == current_state
         stay_column = state_classes.index(current_state)
         stay_probabilities = dynamic_probabilities[:, stay_column]
 
@@ -310,13 +319,13 @@ def plot_duration_stay_probability(comparison, output_dir):
         grouped = frame.groupby('DURATION_BUCKET', observed=False)['STAY_PROBABILITY'].mean()
         grouped = grouped.reindex(duration_labels)
 
-        ax.plot(duration_labels, grouped.values, marker='o', label='New dynamic')
+        ax.plot(duration_labels, grouped.values, marker='o', label='Dynamic')
         ax.axhline(
             fixed_matrix[index, index],
             color='black',
             linestyle='--',
             linewidth=1.2,
-            label='Old fixed HMM',
+            label='Fixed HMM',
         )
         ax.set_title(f'Current state {current_state}')
         ax.set_xlabel('Consecutive days already in state')
@@ -328,13 +337,13 @@ def plot_duration_stay_probability(comparison, output_dir):
     for index in range(len(state_classes), len(axes)):
         axes[index].axis('off')
 
-    fig.suptitle(f'q{n_states}: duration-dependent stay probability')
+    fig.suptitle(f'q{n_states}: duration-dependent stay probability (prediction window)')
     path = output_dir / f'duration_stay_probability_q{n_states}.png'
     fig.savefig(path, dpi=160, bbox_inches='tight')
     plt.close(fig)
 
 
-def plot_metric_delta_grids(cases, output_dir, metric):
+def plot_metric_delta_grids(cases, output_dir, metric, split):
     dynamic_cases = [case for case in cases if case > 1]
     if not dynamic_cases:
         return None
@@ -345,11 +354,12 @@ def plot_metric_delta_grids(cases, output_dir, metric):
 
     for ax, n_states in zip(axes, dynamic_cases):
         report = load_or_create_dynamic_report(n_states)
+        report = report[report['SPLIT'] == split]
         fixed = report[report['MODEL'] == 'fixed_hmm_transition']
         dynamic = report[report['MODEL'] == 'dynamic_duration_logit']
         merged = fixed.merge(
             dynamic,
-            on=['N_STATES', 'STATE_LAG', 'EXOG_LAG', 'TRAIN_ROWS', 'VALID_ROWS'],
+            on=['N_STATES', 'STATE_LAG', 'EXOG_LAG', 'TRAIN_ROWS', 'EVAL_ROWS'],
             suffixes=('_FIXED', '_DYNAMIC'),
         )
         merged['DELTA'] = merged[f'{metric}_DYNAMIC'] - merged[f'{metric}_FIXED']
@@ -367,9 +377,9 @@ def plot_metric_delta_grids(cases, output_dir, metric):
         annotate_heatmap(ax, grid.to_numpy(), diverging=True)
 
     fig.colorbar(image, ax=axes, fraction=0.035, pad=0.03)
-    fig.suptitle(f'Dynamic minus fixed {metric.lower()} by lag setting; negative is better')
+    fig.suptitle(f'Dynamic minus fixed {metric.lower()} by lag setting on the {split} split; negative is better')
 
-    path = output_dir / f'transition_{metric.lower()}_delta_grid.png'
+    path = output_dir / f'transition_{metric.lower()}_delta_grid_{split}.png'
     fig.savefig(path, dpi=160, bbox_inches='tight')
     plt.close(fig)
     return path
@@ -401,10 +411,14 @@ def main():
     summary.to_csv(summary_path, index=False)
 
     for metric in ['LOG_LOSS', 'BRIER_SCORE']:
-        path = plot_metric_delta_grids(cases, OUTPUT_DIR, metric)
-        if path is not None:
-            generated_graphs.append(path)
+        for split in ['validation', 'prediction']:
+            path = plot_metric_delta_grids(cases, OUTPUT_DIR, metric, split)
+            if path is not None:
+                generated_graphs.append(path)
 
+    print(f'Train window: start of data to {TRAIN_END} (matches the fixed HMM training window)')
+    print(f'Validation window (lag selection): {TRAIN_END} to {VALIDATION_END}')
+    print(f'Prediction window (final comparison): {VALIDATION_END} onward')
     print(f'Summary table saved to: {summary_path}')
     print('Graphs saved:')
     for path in generated_graphs:

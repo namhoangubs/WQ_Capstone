@@ -1,0 +1,12 @@
+N_STATES,MODEL,TERM,IMPORTANCE,TERM_P_VALUE,INFERENCE_METHOD,REGULARIZATION_C,COEFFICIENT_SCALE,NORMALIZED_IMPORTANCE
+4,MLG,DURATION_STATE_1,0.6078170510859324,0.02,regularized_bootstrap,0.01,penalized_basis_coefficients,0.18488009545987388
+4,MLG,DURATION_STATE_0,0.5670993511350243,0.02,regularized_bootstrap,0.01,penalized_basis_coefficients,0.17249496700653255
+4,MLG,DURATION_STATE_3,0.5039498001893876,0.02,regularized_bootstrap,0.01,penalized_basis_coefficients,0.1532867283001346
+4,MLG,DURATION_STATE_2,0.5024280160176485,0.02,regularized_bootstrap,0.01,penalized_basis_coefficients,0.15282384624962647
+4,MLG,STATE_LAG_0,0.42886013712767584,0.02,regularized_bootstrap,0.01,penalized_basis_coefficients,0.13044665816703077
+4,MLG,JPEICORE_LAG_0,0.14571958729653903,0.02,regularized_bootstrap,0.01,penalized_basis_coefficients,0.04432361869681856
+4,MLG,SPXT_LAG_0,0.13928613146485533,0.02,regularized_bootstrap,0.01,penalized_basis_coefficients,0.042366750382292775
+4,MLG,DBLCIX_LAG_0,0.1359880053445923,0.02,regularized_bootstrap,0.01,penalized_basis_coefficients,0.04136355728189598
+4,MLG,LBUTTRUU_LAG_0,0.09727910048266741,0.02,regularized_bootstrap,0.01,penalized_basis_coefficients,0.029589445296662995
+4,MLG,LT11TRUU_LAG_0,0.08025883185832751,0.02,regularized_bootstrap,0.01,penalized_basis_coefficients,0.024412379463450987
+4,MLG,IBOXIG_LAG_0,0.07894238073502084,0.02,regularized_bootstrap,0.01,penalized_basis_coefficients,0.024011953695680308

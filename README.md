@@ -34,6 +34,7 @@ Instead of training one generator on all historical market days, the project fir
 | HMM candidate search | `p1_0_hmm_params.py` | Trains many HMM candidates with different random seeds. |
 | HMM model selection | `p1_1_best_params.py` | Selects the best HMM seed for each regime setup. |
 | HMM labeling | `p1_2_hmm.py` | Fits final HMMs, labels each day with a `STATE`, and saves transition matrices. |
+| HMM diagnostics | `p1_7_hmm_diagnostics.py` | Compares diagnostic q2/q3/q4 models on one common feature set using fit, residual, bootstrap regime-count, and regime-stability tests. |
 | WGAN training | `p2_2_wgan.py` | Trains WGAN generators by market regime and rolling window. |
 | Simulation | `p3_0_sims.py` | Simulates future regimes and stock returns. |
 | Univariate diagnostics | `p3_1_stat_prop.py` | Checks stylized facts such as autocorrelation, heavy tails, volatility clustering, leverage, and gain/loss asymmetry. |
@@ -104,6 +105,45 @@ New selector rows: 2
 
 This does not change the HMM-WGAN method from the publication. It makes the implementation more deterministic and easier to defend.
 
+## HMM Regime-Count And Goodness-Of-Fit Diagnostics
+
+The production q2 HMM uses `SPXT` and `LT11TRUU`, while production q4 uses all six exogenous return series. Their likelihoods, AIC, and BIC therefore cannot be compared directly because the observed data dimensions differ. `p1_7_hmm_diagnostics.py` leaves those production models unchanged and independently fits diagnostic q2, q3, and q4 full-covariance Gaussian HMMs to the same standardized six-series training sample.
+
+Run the diagnostics after `processed/exog_rets.csv` has been created:
+
+```powershell
+python p1_7_hmm_diagnostics.py
+```
+
+The default run uses 50 multistart fits per regime count and 100 parametric-bootstrap replications. A smaller smoke run can verify the pipeline, but should not be used for the final 5% bootstrap decision:
+
+```powershell
+python p1_7_hmm_diagnostics.py --starts 5 --bootstrap-replicates 10 --bootstrap-starts 1
+```
+
+Outputs are written to `phase_1/`:
+
+| Output | Interpretation |
+|---|---|
+| `hmm_diagnostic_multistart.csv` | Convergence, state occupancy, likelihood, AIC, and BIC for every random initialization. |
+| `hmm_gof_summary.csv` | Comparable q2/q3/q4 AIC, BIC, approximate ICL, train/validation/prediction likelihood, posterior entropy, and minimum regime separation. |
+| `hmm_residual_diagnostics.csv` | Marginal one-step PIT uniformity, Ljung-Box tests on PIT normal scores and their squares at lags 10/20, and ARCH LM tests by feature and holdout split. |
+| `hmm_regime_stability.csv` | Per-regime occupancy, expected duration, transition-homogeneity test, emission-mean stability test, and explicit instability reasons. |
+| `hmm_covariance_diagnostics.csv` | Per-regime covariance eigenvalues, condition numbers, positive-definiteness, and numerical-stability flags. |
+| `hmm_emission_normality.csv` | Per-regime and per-feature Jarque-Bera tests of Gaussian emissions, including within-regime Bonferroni decisions. |
+| `hmm_duration_geometric_diagnostics.csv` | Bootstrap tests comparing complete inferred state spells with HMM-implied geometric durations. |
+| `hmm_regime_count_bootstrap.csv` | Parametric-bootstrap likelihood-ratio tests for q2 versus q3 and q3 versus q4. |
+| `hmm_regime_count_recommendation.csv` | Side-by-side support from BIC, ICL, validation likelihood, bootstrap LRT, and regime-stability flags. |
+| `hmm_diagnostic_run_config.csv` | Exact dates, features, standardization, random seed, multistart count, and bootstrap settings. |
+| `hmm_diagnostics_model_selection.png` | Visual comparison of fit, separation, and instability across q2/q3/q4. |
+| `hmm_diagnostics_assumption_checks.png` | Visual summary of covariance conditioning, Gaussian-emission rejections, residual volatility clustering, and geometric-duration tests. |
+
+For the bootstrap LRT, the null hypothesis is that the lower-regime model generates the data and the additional regime is not required. The ordinary chi-square LRT is not used because regime-count testing in HMMs involves unidentified parameters and boundary cases. A non-significant bootstrap result means there is insufficient evidence to add the regime; it does not prove that the lower-regime model is true.
+
+The stability report flags a regime when it is rare, has an expected duration below two days, has changing outgoing transition probabilities across three training subperiods, has a changing emission mean between training halves, or cannot be tested because too few observations are available. These p-values are diagnostics on inferred states and should be interpreted together with economic meaning, occupancy, and out-of-sample likelihood.
+
+The covariance diagnostic uses a condition-number threshold of `1e8`; a covariance must also be finite and positive definite to be marked stable. The Jarque-Bera report preserves nominal 5% decisions and adds a Bonferroni-adjusted decision across the six emission features within each regime. The geometric-duration test excludes the left- and right-censored boundary spells and uses a parametric bootstrap against the fitted HMM self-transition probability.
+
 ## Dynamic Transition Experiment - HMM Only
 
 The capstone extension proposes improving only the regime-transition layer first, without touching WGAN. To keep this clean, the new transition experiment is separated into its own modules.
@@ -112,6 +152,7 @@ The capstone extension proposes improving only the regime-transition layer first
 |---|---|---|
 | `p1_3_transition_features.py` | Builds supervised transition features from HMM states, exogenous-return lags, regime duration, and state-duration interactions. | The old code used only the current regime and the fixed HMM transition matrix. |
 | `p1_4_dynamic_transition.py` | Trains and evaluates a dynamic multinomial logistic transition model. | Compares dynamic `P(q[t+1] | features at t)` against fixed `A[q[t]]`. |
+| `p1_4_mlg_transition.py` | Independently selects a regularized multinomial logistic GAM (MLG), applies train-only 5% joint term tests, and plots selected partial effects. | Adds nonlinear transition effects without changing the fixed HMM or MLR calibration paths. |
 | `benchmark_dynamic_transition.py` | Runs the HMM-only benchmark for `q2` and `q4`. | Produces fixed-vs-dynamic metrics without retraining WGAN. |
 | `p1_5_transition_comparison.py` | Creates transition-matrix comparison tables and graphs. | Visualizes observed transitions, fixed HMM transitions, dynamic average transitions, and metric differences. |
 | `p1_6_duration_hazard.py` | Fits a duration-hazard scheme where exit probability is forced to rise with time spent in a regime. | Tests the "regimes age" hypothesis against the fixed HMM. |
@@ -158,6 +199,49 @@ Result on the prediction window (2017-2023, out-of-sample for both models, lags 
 
 The lag grid also shows that lagged state dummies add nothing (identical log-loss for `STATE_LAG` 0, 1, 2): the predictive signal comes from duration and same-day exogenous returns.
 
+### Model 1B: Regularized Multinomial Logistic GAM
+
+`p1_4_mlg_transition.py` fits MLG independently of the MLR. Continuous predictors use cubic B-spline terms; state indicators remain identifiable linear categorical terms. Smooths use a second-difference P-spline penalty, and the smoothing strength (`C`, reported together with `lambda = 1/C`) and knot count are selected on the validation window using log-loss, Brier score, and accuracy.
+
+Predictor significance is assessed only on the train window. The default `auto` inference mode first uses joint multinomial Wald tests when the unpenalized inference model is stable. If that fit fails, as can happen in sparse q4 regimes with spline-expanded terms, the code switches to a regularized parametric-bootstrap likelihood-ratio screen. The bootstrap screen compares each candidate term with an intercept-only baseline under the penalized MLG fit and reports empirical p-values at the same 5% threshold. The prediction window is not used for p-value screening or model selection.
+
+The MLG report includes `INFERENCE_METHOD`, `BOOTSTRAP_C`, `BOOTSTRAP_REPLICATES`, `TERM_BOOTSTRAP_IMPROVEMENTS`, and `TERM_BOOTSTRAP_VALID_REPLICATES` so it is clear whether a candidate used ordinary Wald inference or the regularized bootstrap fallback.
+
+The benchmark writes a separate MLG report and a selected three-model comparison, so the existing fixed-HMM and MLR report remains unchanged:
+
+```text
+phase_1/mlg_transition_report_q2.csv
+phase_1/mlg_transition_report_q4.csv
+phase_1/mlg_selected_significance_q2.csv
+phase_1/mlg_selected_significance_q4.csv
+phase_1/transition_model_comparison_q2.csv
+phase_1/transition_model_comparison_q4.csv
+```
+
+`p1_5_transition_comparison.py` additionally writes fixed-vs-MLR-vs-MLG out-of-sample matrices and metrics. One centered log-odds partial-effect plot is written for every predictor retained by the selected MLG, with the plotted values also saved to CSV:
+
+```text
+phase_1/transition_comparison/transition_matrix_summary_mlg.csv
+phase_1/transition_comparison/transition_matrix_comparison_mlg_q2.png
+phase_1/transition_comparison/transition_matrix_comparison_mlg_q4.png
+phase_1/transition_comparison/transition_selected_oos_metrics_q2.csv
+phase_1/transition_comparison/transition_selected_oos_metrics_q2.png
+phase_1/transition_comparison/transition_selected_oos_metrics_q4.csv
+phase_1/transition_comparison/transition_selected_oos_metrics_q4.png
+phase_1/transition_comparison/feature_importance_mlr_q2.csv
+phase_1/transition_comparison/feature_importance_mlr_q2.png
+phase_1/transition_comparison/feature_importance_mlg_q2.csv
+phase_1/transition_comparison/feature_importance_mlg_q2.png
+phase_1/transition_comparison/feature_importance_mlr_q4.csv
+phase_1/transition_comparison/feature_importance_mlr_q4.png
+phase_1/transition_comparison/feature_importance_mlg_q4.csv
+phase_1/transition_comparison/feature_importance_mlg_q4.png
+phase_1/transition_comparison/mlg_partial_effects_q2/
+phase_1/transition_comparison/mlg_partial_effects_q4/
+```
+
+MLR feature importance is the coefficient norm after the model's standardization step. MLG term importance is the coefficient norm across the selected penalized spline or categorical basis columns. These rankings are intended to compare features within each selected model, not to compare coefficient magnitudes directly between MLR and MLG.
+
 ### Model 2: Duration-Hazard Scheme (Rejected By The Data)
 
 `p1_6_duration_hazard.py` tests the economic intuition that regimes "age": the longer the market has stayed in a regime, the more likely it should be to exit. The scheme keeps the fixed HMM matrix as the base and adds a hazard on the diagonal:
@@ -193,6 +277,12 @@ Reports are saved under `phase_1/`:
 ```text
 dynamic_transition_report_q2.csv
 dynamic_transition_report_q4.csv
+mlg_transition_report_q2.csv
+mlg_transition_report_q4.csv
+mlg_selected_significance_q2.csv
+mlg_selected_significance_q4.csv
+transition_model_comparison_q2.csv
+transition_model_comparison_q4.csv
 duration_hazard_report_q2.csv
 duration_hazard_report_q4.csv
 duration_hazard_betas.csv
@@ -202,10 +292,13 @@ Graphs and matrix tables are saved under `phase_1/transition_comparison/`:
 
 ```text
 transition_matrix_summary.csv
+transition_matrix_summary_mlg.csv
 duration_hazard_matrix_summary.csv
 transition_matrix_fixed_only_q1.png
 transition_matrix_comparison_q2.png
 transition_matrix_comparison_q4.png
+transition_matrix_comparison_mlg_q2.png
+transition_matrix_comparison_mlg_q4.png
 transition_matrix_hazard_q2.png
 transition_matrix_hazard_q4.png
 duration_stay_probability_q2.png
@@ -276,6 +369,7 @@ This is why the extension should be validated at the transition layer before bei
 | `benchmark_hmm_selection.py` | Old-vs-new HMM selector benchmark. |
 | `p1_5_transition_comparison.py` | HMM transition comparison graph generator. |
 | `p1_6_duration_hazard.py` | Duration-hazard transition scheme fit and evaluation. |
+| `p1_7_hmm_diagnostics.py` | Diagnostic q2/q3/q4 goodness-of-fit, regime-count, and stability tests. |
 
 Generated data, model weights, PDFs, zip files, virtual environments, and caches are intentionally excluded from Git by `.gitignore`.
 
@@ -316,7 +410,7 @@ Start with lightweight checks before running the full model.
 ### 1. Check Python syntax
 
 ```powershell
-python -m py_compile project_config.py p0_1_raw_to_rets.py p1_0_hmm_params.py p1_1_best_params.py p1_2_hmm.py benchmark_hmm_selection.py
+python -m py_compile project_config.py p0_1_raw_to_rets.py p1_0_hmm_params.py p1_1_best_params.py p1_2_hmm.py p1_7_hmm_diagnostics.py benchmark_hmm_selection.py
 ```
 
 ### 2. Verify the HMM selection improvement

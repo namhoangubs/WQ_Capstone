@@ -162,16 +162,18 @@ For a duration term `DURATION_STATE_i`, partial-effect plots report only relevan
 
 ### Group-Weighted MLG
 
-`p1_10_weighted_mlg_transition.py` fits an additional MLG with objective:
+`p1_10_weighted_mlg_transition.py` fits an additional MLG with the following group-weighted penalized objective:
 
-```text
-multinomial NLL
-+ (1 / (2C)) * [
-    w_state * ||beta_state||^2
-  + w_market * ||beta_market||^2
-  + w_duration * ||beta_duration||^2
-]
-```
+$$
+\mathcal{L}(\beta)
+= \operatorname{NLL}_{\text{multinomial}}(\beta)
++ \frac{1}{2C}
+\left(
+w_{\text{state}}\lVert\beta_{\text{state}}\rVert_2^2
++ w_{\text{market}}\lVert\beta_{\text{market}}\rVert_2^2
++ w_{\text{duration}}\lVert\beta_{\text{duration}}\rVert_2^2
+\right)
+$$
 
 The state penalty is normalized to 1 because common penalty scaling is absorbed by global `C`. Validation searches:
 
@@ -204,6 +206,8 @@ The evidence is mixed:
 
 The q4 recommendation is therefore statistical support for an additional regime, not evidence that a stationary Gaussian q4 HMM is fully specified.
 
+![HMM model-selection diagnostics](phase_1/hmm_diagnostics_model_selection.png)
+
 ### Assumption And Stability Checks
 
 | Diagnostic | Key result | Interpretation |
@@ -216,6 +220,8 @@ The q4 recommendation is therefore statistical support for an additional regime,
 | Transition stability | q2, q3, and most q4 regimes change across training subperiods. | A fixed transition matrix is too restrictive as a complete transition model. |
 
 These diagnostics motivate dynamic transition probabilities and regime-conditional generative models, while also cautioning against treating hard HMM labels as perfectly observed truth.
+
+![HMM assumption and stability checks](phase_1/hmm_diagnostics_assumption_checks.png)
 
 ## Transition-Dynamics Diagnostics
 
@@ -250,6 +256,10 @@ Soft current-state probabilities materially improve q4 one-step probability fore
 
 Block-bootstrap confidence intervals for q4 soft-minus-hard log loss and Brier score are entirely below zero in validation and prediction. q2 evidence is weaker because q2 posteriors are already more concentrated.
 
+![q2 transition calibration](phase_1/hmm_transition_dynamics/transition_calibration_q2.png)
+
+![q4 transition calibration](phase_1/hmm_transition_dynamics/transition_calibration_q4.png)
+
 ## Feature-Ablation Results
 
 `p1_9_transition_feature_ablation.py` compares state-only, state-plus-market, state-plus-duration, restricted-duration, and full specifications. It also performs 199 joint block permutations within current state.
@@ -263,6 +273,14 @@ Main findings:
 - q4 MLR improves when the market block is removed, while q4 MLG receives only a small validation benefit from market variables.
 
 This evidence supports regularizing duration rather than deleting it and motivates the group-weighted MLG as an alternative specification.
+
+![q2 transition-feature ablation](phase_1/transition_feature_ablation/feature_ablation_log_loss_q2.png)
+
+![q4 transition-feature ablation](phase_1/transition_feature_ablation/feature_ablation_log_loss_q4.png)
+
+![q2 conditional permutation importance](phase_1/transition_feature_ablation/conditional_permutation_log_loss_q2.png)
+
+![q4 conditional permutation importance](phase_1/transition_feature_ablation/conditional_permutation_log_loss_q4.png)
 
 ## Transition Backtest Results
 
@@ -289,6 +307,14 @@ Interpretation:
 - MLG variants improve q4 probability quality but not hard classification accuracy.
 - Accuracy is dominated by high stay probabilities and should not be used alone for model selection.
 
+![q2 selected transition-model OOS metrics](phase_1/transition_comparison/transition_selected_oos_metrics_q2.png)
+
+![q4 selected transition-model OOS metrics](phase_1/transition_comparison/transition_selected_oos_metrics_q4.png)
+
+![q2 transition-matrix comparison](phase_1/transition_comparison/transition_matrix_comparison_mlg_q2.png)
+
+![q4 transition-matrix comparison](phase_1/transition_comparison/transition_matrix_comparison_mlg_q4.png)
+
 ### Selected Dynamic Specifications
 
 | Model | q2 selected specification | q4 selected specification |
@@ -307,11 +333,27 @@ Weighted coefficient-norm allocation changes in the intended direction but shoul
 | q4 | Original MLG | 20.61% | 66.35% | 13.04% |
 | q4 | Weighted MLG | 28.40% | 59.84% | 11.76% |
 
+![q2 original MLR feature importance](phase_1/transition_comparison/feature_importance_mlr_q2.png)
+
+![q2 original MLG feature importance](phase_1/transition_comparison/feature_importance_mlg_q2.png)
+
+![q2 weighted MLG feature importance](phase_1/transition_comparison/feature_importance_weighted_mlg_q2.png)
+
+![q4 original MLR feature importance](phase_1/transition_comparison/feature_importance_mlr_q4.png)
+
+![q4 original MLG feature importance](phase_1/transition_comparison/feature_importance_mlg_q4.png)
+
+![q4 weighted MLG feature importance](phase_1/transition_comparison/feature_importance_weighted_mlg_q4.png)
+
 ## Duration-Hazard Result
 
 `p1_6_duration_hazard.py` tests a constrained model in which exit probability must rise with duration. The maximum-likelihood solution places all nonnegative hazard coefficients at zero for q2 and q4. Unconstrained diagnostic coefficients are negative, indicating decreasing exit hazard and increasing persistence.
 
 The restricted aging model is therefore rejected as a replacement for the fixed transition matrix. Duration remains useful, but its empirical effect is closer to persistence than forced aging.
+
+![q2 duration stay probability](phase_1/transition_comparison/duration_stay_probability_q2.png)
+
+![q4 duration stay probability](phase_1/transition_comparison/duration_stay_probability_q4.png)
 
 ## Phase 2 And Phase 3 Backtesting Status
 

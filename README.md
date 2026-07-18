@@ -164,15 +164,13 @@ For a duration term `DURATION_STATE_i`, partial-effect plots report only relevan
 
 `p1_10_weighted_mlg_transition.py` fits an additional MLG with the following group-weighted penalized objective:
 
-```math
-\mathcal{L}(\beta)
-= \operatorname{NLL}_{\mathrm{multinomial}}(\beta)
-+ \frac{1}{2C}
-\left(
-w_{\mathrm{state}}\|\beta_{\mathrm{state}}\|_2^2
-+ w_{\mathrm{market}}\|\beta_{\mathrm{market}}\|_2^2
-+ w_{\mathrm{duration}}\|\beta_{\mathrm{duration}}\|_2^2
-\right)
+```text
+multinomial NLL
++ (1 / (2C)) * [
+    w_state * ||beta_state||^2
+  + w_market * ||beta_market||^2
+  + w_duration * ||beta_duration||^2
+]
 ```
 
 The state penalty is normalized to 1 because common penalty scaling is absorbed by global `C`. Validation searches:

@@ -353,6 +353,22 @@ The restricted aging model is therefore rejected as a replacement for the fixed 
 
 ![q4 duration stay probability](phase_1/transition_comparison/duration_stay_probability_q4.png)
 
+## MLG Duration Partial Effects
+
+The original MLG partial-effect plots show how each state-specific duration term changes relevant next-state log-odds while the other selected predictors are held fixed. For `DURATION_STATE_i`, the plotted contrasts are limited to transitions that start from current state `i`.
+
+![q2 MLG duration partial effect, state 0](phase_1/transition_comparison/mlg_partial_effects_q2/DURATION_STATE_0.png)
+
+![q2 MLG duration partial effect, state 1](phase_1/transition_comparison/mlg_partial_effects_q2/DURATION_STATE_1.png)
+
+![q4 MLG duration partial effect, state 0](phase_1/transition_comparison/mlg_partial_effects_q4/DURATION_STATE_0.png)
+
+![q4 MLG duration partial effect, state 1](phase_1/transition_comparison/mlg_partial_effects_q4/DURATION_STATE_1.png)
+
+![q4 MLG duration partial effect, state 2](phase_1/transition_comparison/mlg_partial_effects_q4/DURATION_STATE_2.png)
+
+![q4 MLG duration partial effect, state 3](phase_1/transition_comparison/mlg_partial_effects_q4/DURATION_STATE_3.png)
+
 ## Phase 2 And Phase 3 Backtesting Status
 
 The repository implements WGAN training, return simulation, stylized-fact diagnostics, and VaR backtesting. `p3_3_risk_man.py` produces:

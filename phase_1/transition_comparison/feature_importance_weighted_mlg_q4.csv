@@ -1,0 +1,12 @@
+N_STATES,MODEL,TERM,PENALTY_GROUP,GROUP_PENALTY_WEIGHT,IMPORTANCE,TERM_P_VALUE,INFERENCE_METHOD,REGULARIZATION_C,COEFFICIENT_SCALE,NORMALIZED_IMPORTANCE
+4,WEIGHTED_MLG,DURATION_STATE_1,duration,1.0,0.6090425151141466,0.02,regularized_bootstrap,0.01,effective_original_penalized_basis_coefficients,0.16782542864139707
+4,WEIGHTED_MLG,DURATION_STATE_0,duration,1.0,0.5626502583293189,0.02,regularized_bootstrap,0.01,effective_original_penalized_basis_coefficients,0.15504175560159908
+4,WEIGHTED_MLG,DURATION_STATE_3,duration,1.0,0.5022048227366679,0.02,regularized_bootstrap,0.01,effective_original_penalized_basis_coefficients,0.13838564229914535
+4,WEIGHTED_MLG,DURATION_STATE_2,duration,1.0,0.49784946672883656,0.02,regularized_bootstrap,0.01,effective_original_penalized_basis_coefficients,0.13718549703709712
+4,WEIGHTED_MLG,STATE_LAG_0,state,1.0,0.4267469716959637,0.02,regularized_bootstrap,0.01,effective_original_penalized_basis_coefficients,0.11759276515018074
+4,WEIGHTED_MLG,SPXT_LAG_0,market,0.5,0.2158676689676532,0.02,regularized_bootstrap,0.01,effective_original_penalized_basis_coefficients,0.05948367014661653
+4,WEIGHTED_MLG,JPEICORE_LAG_0,market,0.5,0.21429395120500946,0.02,regularized_bootstrap,0.01,effective_original_penalized_basis_coefficients,0.05905002249227048
+4,WEIGHTED_MLG,DBLCIX_LAG_0,market,0.5,0.20257747598762246,0.02,regularized_bootstrap,0.01,effective_original_penalized_basis_coefficients,0.05582147534370935
+4,WEIGHTED_MLG,LBUTTRUU_LAG_0,market,0.5,0.15430802359845905,0.02,regularized_bootstrap,0.01,effective_original_penalized_basis_coefficients,0.04252052945493408
+4,WEIGHTED_MLG,LT11TRUU_LAG_0,market,0.5,0.12889565158788507,0.02,regularized_bootstrap,0.01,effective_original_penalized_basis_coefficients,0.035517993310688216
+4,WEIGHTED_MLG,IBOXIG_LAG_0,market,0.5,0.11458723435358849,0.02,regularized_bootstrap,0.01,effective_original_penalized_basis_coefficients,0.031575220522362064

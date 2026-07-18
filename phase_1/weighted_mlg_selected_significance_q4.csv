@@ -1,0 +1,12 @@
+N_STATES,TERM,P_VALUE,SELECTED,SIGNIFICANT_AT_5_PERCENT,PENALTY_GROUP,SELECTED_GROUP_WEIGHT,INFERENCE_SOURCE
+4,DBLCIX_LAG_0,0.02,True,True,market,0.5,original_mlg_significance_screen
+4,DURATION_STATE_0,0.02,True,True,duration,1.0,original_mlg_significance_screen
+4,DURATION_STATE_1,0.02,True,True,duration,1.0,original_mlg_significance_screen
+4,DURATION_STATE_2,0.02,True,True,duration,1.0,original_mlg_significance_screen
+4,DURATION_STATE_3,0.02,True,True,duration,1.0,original_mlg_significance_screen
+4,IBOXIG_LAG_0,0.02,True,True,market,0.5,original_mlg_significance_screen
+4,JPEICORE_LAG_0,0.02,True,True,market,0.5,original_mlg_significance_screen
+4,LBUTTRUU_LAG_0,0.02,True,True,market,0.5,original_mlg_significance_screen
+4,LT11TRUU_LAG_0,0.02,True,True,market,0.5,original_mlg_significance_screen
+4,SPXT_LAG_0,0.02,True,True,market,0.5,original_mlg_significance_screen
+4,STATE_LAG_0,0.02,True,True,state,1.0,original_mlg_significance_screen

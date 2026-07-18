@@ -1,0 +1,9 @@
+N_STATES,SPLIT,TRANSITION_MATRIX_VARIANT,DIRICHLET_PSEUDOCOUNT,METRIC,DIFFERENCE_DEFINITION,MEAN_PAIRED_DIFFERENCE,BLOCK_BOOTSTRAP_CI_LOWER,BLOCK_BOOTSTRAP_CI_UPPER,BLOCK_LENGTH,BOOTSTRAP_REPLICATES,SOFT_POSTERIOR_SIGNIFICANTLY_BETTER,HARD_STATE_SIGNIFICANTLY_BETTER
+2,validation,fixed,0.0,LOG_LOSS,soft_posterior_fixed_transition minus hard_state_fixed_transition,-0.025777681260653672,-0.05575905650744969,0.0020468184384011233,20,1000,False,False
+2,validation,fixed,0.0,BRIER_SCORE,soft_posterior_fixed_transition minus hard_state_fixed_transition,-0.001959549429392905,-0.013677930097998984,0.009755605326721664,20,1000,False,False
+2,validation,jeffreys_smoothed,0.5,LOG_LOSS,soft_posterior_jeffreys_smoothed_transition minus hard_state_jeffreys_smoothed_transition,-0.04094400438446158,-0.07807262475214105,-0.010084590319288727,20,1000,True,False
+2,validation,jeffreys_smoothed,0.5,BRIER_SCORE,soft_posterior_jeffreys_smoothed_transition minus hard_state_jeffreys_smoothed_transition,-0.0038627701116594323,-0.017533212421674327,0.008252704661813855,20,1000,False,False
+2,prediction,fixed,0.0,LOG_LOSS,soft_posterior_fixed_transition minus hard_state_fixed_transition,-0.029174655854755423,-0.060668456178927986,-3.412676226086794e-05,20,1000,True,False
+2,prediction,fixed,0.0,BRIER_SCORE,soft_posterior_fixed_transition minus hard_state_fixed_transition,-0.002735352676309414,-0.016438089753856473,0.011380946924914887,20,1000,False,False
+2,prediction,jeffreys_smoothed,0.5,LOG_LOSS,soft_posterior_jeffreys_smoothed_transition minus hard_state_jeffreys_smoothed_transition,-0.04441488513244525,-0.08212790630350743,-0.010872312545154715,20,1000,True,False
+2,prediction,jeffreys_smoothed,0.5,BRIER_SCORE,soft_posterior_jeffreys_smoothed_transition minus hard_state_jeffreys_smoothed_transition,-0.005047100156547021,-0.020187353682744155,0.010221567274265602,20,1000,False,False

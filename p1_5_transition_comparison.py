@@ -24,6 +24,18 @@ from p1_4_mlg_transition import (
     load_or_create_mlg_report,
     plot_selected_mlg_partial_effects,
 )
+from p1_10_weighted_mlg_transition import (
+    best_weighted_mlg_config,
+    fit_selected_weighted_mlg_transition,
+    load_or_create_weighted_mlg_report,
+    plot_selected_weighted_mlg_partial_effects,
+    term_group,
+)
+from p1_11_pvalue_vif_mlr_transition import (
+    best_pvalue_vif_mlr_config,
+    fit_selected_pvalue_vif_mlr,
+    load_or_create_pvalue_vif_mlr_report,
+)
 from project_config import BASE_DIR
 
 
@@ -175,6 +187,54 @@ def dynamic_comparison_data(n_states):
         state_classes,
     )
 
+    weighted_mlg_report = load_or_create_weighted_mlg_report(n_states)
+    weighted_mlg_model, weighted_mlg_splits, weighted_mlg_state_classes, weighted_mlg_config = (
+        fit_selected_weighted_mlg_transition(n_states, report=weighted_mlg_report)
+    )
+    if list(weighted_mlg_state_classes) != list(state_classes):
+        raise ValueError(f'MLR and weighted MLG state classes differ for q{n_states}.')
+    weighted_mlg_X_train, _, _ = weighted_mlg_splits['train']
+    weighted_mlg_X_prediction, weighted_mlg_y_prediction, weighted_mlg_meta_prediction = (
+        weighted_mlg_splits['prediction']
+    )
+    weighted_mlg_probabilities = _align_probabilities(
+        weighted_mlg_model.predict_proba(weighted_mlg_X_prediction),
+        weighted_mlg_model.classes_,
+        state_classes,
+    )
+    weighted_mlg_current_prediction = weighted_mlg_meta_prediction[
+        'CURRENT_STATE'
+    ].to_numpy(dtype=int)
+    weighted_mlg_matrix = average_probability_matrix(
+        weighted_mlg_current_prediction,
+        weighted_mlg_probabilities,
+        state_classes,
+    )
+
+    pvalue_vif_mlr_report = load_or_create_pvalue_vif_mlr_report(n_states)
+    pvalue_vif_mlr_model, pvalue_vif_mlr_splits, pvalue_vif_mlr_state_classes, pvalue_vif_mlr_config = (
+        fit_selected_pvalue_vif_mlr(n_states, report=pvalue_vif_mlr_report)
+    )
+    if list(pvalue_vif_mlr_state_classes) != list(state_classes):
+        raise ValueError(f'MLR and p-value/VIF MLR state classes differ for q{n_states}.')
+    pvalue_vif_mlr_X_train, _, _ = pvalue_vif_mlr_splits['train']
+    pvalue_vif_mlr_X_prediction, pvalue_vif_mlr_y_prediction, pvalue_vif_mlr_meta_prediction = (
+        pvalue_vif_mlr_splits['prediction']
+    )
+    pvalue_vif_mlr_probabilities = _align_probabilities(
+        pvalue_vif_mlr_model.predict_proba(pvalue_vif_mlr_X_prediction),
+        pvalue_vif_mlr_model.classes_,
+        state_classes,
+    )
+    pvalue_vif_mlr_current_prediction = pvalue_vif_mlr_meta_prediction[
+        'CURRENT_STATE'
+    ].to_numpy(dtype=int)
+    pvalue_vif_mlr_matrix = average_probability_matrix(
+        pvalue_vif_mlr_current_prediction,
+        pvalue_vif_mlr_probabilities,
+        state_classes,
+    )
+
     return {
         'n_states': n_states,
         'state_lag': state_lag,
@@ -185,6 +245,8 @@ def dynamic_comparison_data(n_states):
         'observed_matrix': observed_matrix,
         'dynamic_matrix': dynamic_matrix,
         'mlg_matrix': mlg_matrix,
+        'weighted_mlg_matrix': weighted_mlg_matrix,
+        'pvalue_vif_mlr_matrix': pvalue_vif_mlr_matrix,
         'dynamic_model': model,
         'X_train': X_train,
         'X_prediction': X_prediction,
@@ -199,6 +261,22 @@ def dynamic_comparison_data(n_states):
         'mlg_meta_prediction': mlg_meta_prediction,
         'mlg_config': mlg_config,
         'mlg_prediction_rows': len(mlg_y_prediction),
+        'weighted_mlg_probabilities': weighted_mlg_probabilities,
+        'weighted_mlg_model': weighted_mlg_model,
+        'weighted_mlg_X_train': weighted_mlg_X_train,
+        'weighted_mlg_X_prediction': weighted_mlg_X_prediction,
+        'weighted_mlg_y_prediction': weighted_mlg_y_prediction,
+        'weighted_mlg_meta_prediction': weighted_mlg_meta_prediction,
+        'weighted_mlg_config': weighted_mlg_config,
+        'weighted_mlg_prediction_rows': len(weighted_mlg_y_prediction),
+        'pvalue_vif_mlr_probabilities': pvalue_vif_mlr_probabilities,
+        'pvalue_vif_mlr_model': pvalue_vif_mlr_model,
+        'pvalue_vif_mlr_X_train': pvalue_vif_mlr_X_train,
+        'pvalue_vif_mlr_X_prediction': pvalue_vif_mlr_X_prediction,
+        'pvalue_vif_mlr_y_prediction': pvalue_vif_mlr_y_prediction,
+        'pvalue_vif_mlr_meta_prediction': pvalue_vif_mlr_meta_prediction,
+        'pvalue_vif_mlr_config': pvalue_vif_mlr_config,
+        'pvalue_vif_mlr_prediction_rows': len(pvalue_vif_mlr_y_prediction),
         'prediction_start': X_prediction.index.min().date(),
         'prediction_end': X_prediction.index.max().date(),
     }
@@ -216,6 +294,14 @@ def save_prediction_probability_vectors(comparison, output_dir):
     fixed_probabilities = comparison['fixed_probabilities']
     dynamic_probabilities = comparison['dynamic_probabilities']
     mlg_probabilities = comparison['mlg_probabilities']
+    weighted_mlg_X_prediction = comparison['weighted_mlg_X_prediction']
+    weighted_mlg_y_prediction = comparison['weighted_mlg_y_prediction']
+    weighted_mlg_meta_prediction = comparison['weighted_mlg_meta_prediction']
+    weighted_mlg_probabilities = comparison['weighted_mlg_probabilities']
+    pvalue_vif_mlr_X_prediction = comparison['pvalue_vif_mlr_X_prediction']
+    pvalue_vif_mlr_y_prediction = comparison['pvalue_vif_mlr_y_prediction']
+    pvalue_vif_mlr_meta_prediction = comparison['pvalue_vif_mlr_meta_prediction']
+    pvalue_vif_mlr_probabilities = comparison['pvalue_vif_mlr_probabilities']
 
     frame = DataFrame({
         'DATE': X_prediction.index,
@@ -248,6 +334,42 @@ def save_prediction_probability_vectors(comparison, output_dir):
 
     frame = frame.merge(
         mlg_frame,
+        on=['DATE', 'CURRENT_STATE', 'ACTUAL_NEXT_STATE'],
+        how='outer',
+        validate='one_to_one',
+    ).sort_values('DATE')
+
+    weighted_mlg_frame = DataFrame({
+        'DATE': weighted_mlg_X_prediction.index,
+        'CURRENT_STATE': weighted_mlg_meta_prediction['CURRENT_STATE'].to_numpy(dtype=int),
+        'ACTUAL_NEXT_STATE': weighted_mlg_y_prediction.to_numpy(dtype=int),
+    })
+    for column, state in enumerate(state_classes):
+        weighted_mlg_frame[f'WEIGHTED_MLG_P_TO_{state}'] = weighted_mlg_probabilities[:, column]
+    weighted_mlg_frame['WEIGHTED_MLG_ROW_SUM'] = weighted_mlg_probabilities.sum(axis=1)
+    weighted_mlg_frame['WEIGHTED_MLG_PREDICTED_NEXT_STATE'] = [
+        state_classes[index] for index in weighted_mlg_probabilities.argmax(axis=1)
+    ]
+    frame = frame.merge(
+        weighted_mlg_frame,
+        on=['DATE', 'CURRENT_STATE', 'ACTUAL_NEXT_STATE'],
+        how='outer',
+        validate='one_to_one',
+    ).sort_values('DATE')
+
+    pvalue_vif_mlr_frame = DataFrame({
+        'DATE': pvalue_vif_mlr_X_prediction.index,
+        'CURRENT_STATE': pvalue_vif_mlr_meta_prediction['CURRENT_STATE'].to_numpy(dtype=int),
+        'ACTUAL_NEXT_STATE': pvalue_vif_mlr_y_prediction.to_numpy(dtype=int),
+    })
+    for column, state in enumerate(state_classes):
+        pvalue_vif_mlr_frame[f'PVIF_MLR_P_TO_{state}'] = pvalue_vif_mlr_probabilities[:, column]
+    pvalue_vif_mlr_frame['PVIF_MLR_ROW_SUM'] = pvalue_vif_mlr_probabilities.sum(axis=1)
+    pvalue_vif_mlr_frame['PVIF_MLR_PREDICTED_NEXT_STATE'] = [
+        state_classes[index] for index in pvalue_vif_mlr_probabilities.argmax(axis=1)
+    ]
+    frame = frame.merge(
+        pvalue_vif_mlr_frame,
         on=['DATE', 'CURRENT_STATE', 'ACTUAL_NEXT_STATE'],
         how='outer',
         validate='one_to_one',
@@ -310,6 +432,48 @@ def plot_selected_mlr_feature_importance(comparison, output_dir):
     return _plot_importance(records, f'q{n_states} selected MLR feature importance', path, 'FEATURE')
 
 
+def _pvalue_vif_term_for_feature(feature):
+    match = re.match(r'^(STATE_LAG_\d+)_', feature)
+    if match:
+        return match.group(1)
+    return feature
+
+
+def plot_selected_pvalue_vif_mlr_feature_importance(comparison, output_dir):
+    """Save coefficient importance with selected MLR p-values and VIFs."""
+    n_states = comparison['n_states']
+    model = comparison['pvalue_vif_mlr_model']
+    logit = model.pipeline.named_steps['logit']
+    coefficients = logit.coef_
+    if coefficients.ndim == 1:
+        coefficients = coefficients.reshape(1, -1)
+    importances = np.linalg.norm(coefficients, axis=0)
+
+    records = []
+    for feature, importance in zip(model.selected_columns, importances):
+        term = _pvalue_vif_term_for_feature(feature)
+        records.append({
+            'N_STATES': n_states,
+            'MODEL': 'PVIF_MLR',
+            'FEATURE': feature,
+            'TERM': term,
+            'IMPORTANCE': float(importance),
+            'TERM_P_VALUE': model.term_p_values[term],
+            'FEATURE_VIF': model.feature_vifs[feature],
+            'SIGNIFICANT_AT_5_PERCENT': model.term_p_values[term] <= 0.05,
+            'WITHIN_VIF_THRESHOLD': model.feature_vifs[feature] <= 5.0,
+            'COEFFICIENT_SCALE': 'standardized_input_coefficients',
+        })
+
+    path = output_dir / f'feature_importance_pvalue_vif_mlr_q{n_states}.png'
+    return _plot_importance(
+        records,
+        f'q{n_states} p-value/VIF-selected MLR feature importance',
+        path,
+        'FEATURE',
+    )
+
+
 def plot_selected_mlg_feature_importance(comparison, output_dir):
     """Save coefficient-norm term importance for the selected MLG model."""
     n_states = comparison['n_states']
@@ -336,6 +500,44 @@ def plot_selected_mlg_feature_importance(comparison, output_dir):
 
     path = output_dir / f'feature_importance_mlg_q{n_states}.png'
     return _plot_importance(records, f'q{n_states} selected MLG term importance', path, 'TERM')
+
+
+def plot_selected_weighted_mlg_feature_importance(comparison, output_dir):
+    """Save effective coefficient-norm importance for weighted MLG terms."""
+    n_states = comparison['n_states']
+    model = comparison['weighted_mlg_model']
+    slices = model.transformer.term_slices(
+        comparison['weighted_mlg_X_train'], model.selected_terms
+    )
+    coefficients = model.effective_coefficients_
+    if coefficients.ndim == 1:
+        coefficients = coefficients.reshape(1, -1)
+
+    records = []
+    for term_name in model.selected_terms:
+        term_slice = slices[term_name]
+        term_coefficients = coefficients[:, term_slice]
+        group = term_group(term_name)
+        records.append({
+            'N_STATES': n_states,
+            'MODEL': 'WEIGHTED_MLG',
+            'TERM': term_name,
+            'PENALTY_GROUP': group,
+            'GROUP_PENALTY_WEIGHT': model.group_weights[group],
+            'IMPORTANCE': float(np.linalg.norm(term_coefficients)),
+            'TERM_P_VALUE': model.term_p_values.get(term_name),
+            'INFERENCE_METHOD': model.inference_method,
+            'REGULARIZATION_C': model.regularization_c,
+            'COEFFICIENT_SCALE': 'effective_original_penalized_basis_coefficients',
+        })
+
+    path = output_dir / f'feature_importance_weighted_mlg_q{n_states}.png'
+    return _plot_importance(
+        records,
+        f'q{n_states} selected weighted MLG term importance',
+        path,
+        'TERM',
+    )
 
 
 def matrix_records(
@@ -470,33 +672,68 @@ def plot_mlg_matrix_comparison(comparison, output_dir):
     fixed_matrix = comparison['fixed_matrix']
     observed_matrix = comparison['observed_matrix']
     mlr_matrix = comparison['dynamic_matrix']
+    pvalue_vif_mlr_matrix = comparison['pvalue_vif_mlr_matrix']
     mlg_matrix = comparison['mlg_matrix']
+    weighted_mlg_matrix = comparison['weighted_mlg_matrix']
     mlr_diff_matrix = mlr_matrix - fixed_matrix
+    pvalue_vif_mlr_diff_matrix = pvalue_vif_mlr_matrix - fixed_matrix
     mlg_diff_matrix = mlg_matrix - fixed_matrix
+    weighted_mlg_diff_matrix = weighted_mlg_matrix - fixed_matrix
 
-    fig, axes = plt.subplots(2, 3, figsize=(14.5, 8.2), constrained_layout=True)
+    fig, axes = plt.subplots(2, 5, figsize=(22, 8.2), constrained_layout=True)
     axes = axes.flatten()
     image = draw_heatmap(axes[0], observed_matrix, 'Observed (prediction window)', state_classes)
     draw_heatmap(axes[1], fixed_matrix, f'Fixed HMM (trained to {TRAIN_END})', state_classes)
     draw_heatmap(axes[2], mlr_matrix, f'MLR average (trained to {TRAIN_END})', state_classes)
-    draw_heatmap(axes[3], mlg_matrix, f'MLG average (trained to {TRAIN_END})', state_classes)
+    draw_heatmap(
+        axes[3],
+        pvalue_vif_mlr_matrix,
+        f'P/VIF MLR average (trained to {TRAIN_END})',
+        state_classes,
+    )
+    draw_heatmap(axes[4], mlg_matrix, f'MLG average (trained to {TRAIN_END})', state_classes)
+    draw_heatmap(
+        axes[5],
+        weighted_mlg_matrix,
+        f'Weighted MLG average (trained to {TRAIN_END})',
+        state_classes,
+    )
 
     combined_differences = concatenate([
         mlr_diff_matrix[~isnan(mlr_diff_matrix)],
+        pvalue_vif_mlr_diff_matrix[~isnan(pvalue_vif_mlr_diff_matrix)],
         mlg_diff_matrix[~isnan(mlg_diff_matrix)],
+        weighted_mlg_diff_matrix[~isnan(weighted_mlg_diff_matrix)],
     ])
     max_abs_diff = max(0.001, abs(combined_differences).max())
     norm = TwoSlopeNorm(vmin=-max_abs_diff, vcenter=0, vmax=max_abs_diff)
     diff_image = draw_heatmap(
-        axes[4], mlr_diff_matrix, 'MLR - fixed', state_classes, cmap='RdBu_r', norm=norm
+        axes[6], mlr_diff_matrix, 'MLR - fixed', state_classes, cmap='RdBu_r', norm=norm
     )
     draw_heatmap(
-        axes[5], mlg_diff_matrix, 'MLG - fixed', state_classes, cmap='RdBu_r', norm=norm
+        axes[7],
+        pvalue_vif_mlr_diff_matrix,
+        'P/VIF MLR - fixed',
+        state_classes,
+        cmap='RdBu_r',
+        norm=norm,
     )
-    fig.colorbar(image, ax=axes[:4], fraction=0.025, pad=0.02)
-    fig.colorbar(diff_image, ax=axes[4:], fraction=0.035, pad=0.03)
+    draw_heatmap(
+        axes[8], mlg_diff_matrix, 'MLG - fixed', state_classes, cmap='RdBu_r', norm=norm
+    )
+    draw_heatmap(
+        axes[9],
+        weighted_mlg_diff_matrix,
+        'Weighted MLG - fixed',
+        state_classes,
+        cmap='RdBu_r',
+        norm=norm,
+    )
+    fig.colorbar(image, ax=axes[:6], fraction=0.025, pad=0.02)
+    fig.colorbar(diff_image, ax=axes[6:], fraction=0.035, pad=0.03)
     fig.suptitle(
-        f"q{n_states}: fixed vs MLR vs MLG on prediction window "
+        f"q{n_states}: fixed vs MLR vs P/VIF MLR vs MLG vs weighted MLG "
+        f"on prediction window "
         f"{comparison['prediction_start']} to {comparison['prediction_end']}"
     )
 
@@ -514,10 +751,19 @@ def plot_mlg_matrix_comparison(comparison, output_dir):
                 'OBSERVED_PREDICTION': observed_matrix[row, column],
                 'FIXED_HMM': fixed_matrix[row, column],
                 'MLR_AVERAGE': mlr_matrix[row, column],
+                'PVIF_MLR_AVERAGE': pvalue_vif_mlr_matrix[row, column],
                 'MLG_AVERAGE': mlg_matrix[row, column],
+                'WEIGHTED_MLG_AVERAGE': weighted_mlg_matrix[row, column],
                 'MLR_MINUS_FIXED': mlr_diff_matrix[row, column],
+                'PVIF_MLR_MINUS_FIXED': pvalue_vif_mlr_diff_matrix[row, column],
                 'MLG_MINUS_FIXED': mlg_diff_matrix[row, column],
+                'WEIGHTED_MLG_MINUS_FIXED': weighted_mlg_diff_matrix[row, column],
                 'MLG_MINUS_MLR': mlg_matrix[row, column] - mlr_matrix[row, column],
+                'PVIF_MLR_MINUS_MLR': pvalue_vif_mlr_matrix[row, column] - mlr_matrix[row, column],
+                'PVIF_MLR_MINUS_MLG': pvalue_vif_mlr_matrix[row, column] - mlg_matrix[row, column],
+                'PVIF_MLR_MINUS_WEIGHTED_MLG': pvalue_vif_mlr_matrix[row, column] - weighted_mlg_matrix[row, column],
+                'WEIGHTED_MLG_MINUS_MLR': weighted_mlg_matrix[row, column] - mlr_matrix[row, column],
+                'WEIGHTED_MLG_MINUS_MLG': weighted_mlg_matrix[row, column] - mlg_matrix[row, column],
             })
     return rows
 
@@ -643,25 +889,49 @@ def plot_selected_oos_metrics(n_states, output_dir):
         & (mlg_report['REGULARIZATION_C'] == mlg_config['REGULARIZATION_C'])
         & (mlg_report['SPLIT'] == 'prediction')
     ]
+
+    weighted_mlg_report = load_or_create_weighted_mlg_report(n_states)
+    weighted_mlg_config = best_weighted_mlg_config(weighted_mlg_report)
+    selected_weighted_mlg = weighted_mlg_report[
+        (weighted_mlg_report['STATE_LAG'] == weighted_mlg_config['STATE_LAG'])
+        & (weighted_mlg_report['EXOG_LAG'] == weighted_mlg_config['EXOG_LAG'])
+        & (weighted_mlg_report['N_KNOTS'] == weighted_mlg_config['N_KNOTS'])
+        & (weighted_mlg_report['REGULARIZATION_C'] == weighted_mlg_config['REGULARIZATION_C'])
+        & (weighted_mlg_report['STATE_PENALTY_WEIGHT'] == weighted_mlg_config['STATE_PENALTY_WEIGHT'])
+        & (weighted_mlg_report['MARKET_PENALTY_WEIGHT'] == weighted_mlg_config['MARKET_PENALTY_WEIGHT'])
+        & (weighted_mlg_report['DURATION_PENALTY_WEIGHT'] == weighted_mlg_config['DURATION_PENALTY_WEIGHT'])
+        & (weighted_mlg_report['SPLIT'] == 'prediction')
+    ]
+
+    pvalue_vif_mlr_report = load_or_create_pvalue_vif_mlr_report(n_states)
+    pvalue_vif_mlr_config = best_pvalue_vif_mlr_config(pvalue_vif_mlr_report)
+    selected_pvalue_vif_mlr = pvalue_vif_mlr_report[
+        (pvalue_vif_mlr_report['STATE_LAG'] == pvalue_vif_mlr_config['STATE_LAG'])
+        & (pvalue_vif_mlr_report['EXOG_LAG'] == pvalue_vif_mlr_config['EXOG_LAG'])
+        & (pvalue_vif_mlr_report['SPLIT'] == 'prediction')
+    ]
     selected = DataFrame([
         selected_dynamic[selected_dynamic['MODEL'] == 'fixed_hmm_transition'].iloc[0],
         selected_dynamic[selected_dynamic['MODEL'] == 'dynamic_duration_logit'].iloc[0],
+        selected_pvalue_vif_mlr.iloc[0],
         selected_mlg.iloc[0],
+        selected_weighted_mlg.iloc[0],
     ])
-    selected['DISPLAY_MODEL'] = ['Fixed HMM', 'MLR', 'MLG']
+    selected['DISPLAY_MODEL'] = ['Fixed HMM', 'MLR', 'P/VIF MLR', 'MLG', 'Weighted MLG']
 
     metric_path = output_dir / f'transition_selected_oos_metrics_q{n_states}.csv'
     selected.to_csv(metric_path, index=False)
 
     metrics = ['LOG_LOSS', 'BRIER_SCORE', 'ACCURACY']
-    fig, axes = plt.subplots(1, len(metrics), figsize=(12, 3.8), constrained_layout=True)
-    colors = ['#666666', '#167D8D', '#D17A22']
+    fig, axes = plt.subplots(1, len(metrics), figsize=(16, 4.2), constrained_layout=True)
+    colors = ['#666666', '#167D8D', '#5A8F3D', '#D17A22', '#9A4D32']
     for ax, metric in zip(axes, metrics):
         bars = ax.bar(selected['DISPLAY_MODEL'], selected[metric], color=colors)
         ax.bar_label(bars, fmt='%.3f', padding=3)
         ax.set_title(metric.replace('_', ' ').title())
         ax.set_ylim(0, max(selected[metric]) * 1.18)
         ax.set_ylabel(metric.replace('_', ' ').title())
+        ax.tick_params(axis='x', rotation=18)
     fig.suptitle(f'q{n_states}: selected models on untouched prediction window')
 
     path = output_dir / f'transition_selected_oos_metrics_q{n_states}.png'
@@ -689,17 +959,31 @@ def main():
         mlr_importance_path, mlr_importance_csv = plot_selected_mlr_feature_importance(
             comparison, OUTPUT_DIR
         )
+        pvalue_vif_mlr_importance_path, pvalue_vif_mlr_importance_csv = (
+            plot_selected_pvalue_vif_mlr_feature_importance(comparison, OUTPUT_DIR)
+        )
         mlg_importance_path, mlg_importance_csv = plot_selected_mlg_feature_importance(
             comparison, OUTPUT_DIR
+        )
+        weighted_mlg_importance_path, weighted_mlg_importance_csv = (
+            plot_selected_weighted_mlg_feature_importance(comparison, OUTPUT_DIR)
         )
         all_records.extend(plot_matrix_comparison(comparison, OUTPUT_DIR))
         all_mlg_records.extend(plot_mlg_matrix_comparison(comparison, OUTPUT_DIR))
         plot_duration_stay_probability(comparison, OUTPUT_DIR)
-        partial_paths, _ = plot_selected_mlg_partial_effects(
+        partial_paths, partial_effects_csv = plot_selected_mlg_partial_effects(
             n_states,
             comparison['mlg_model'],
             comparison['mlg_X_train'],
             OUTPUT_DIR,
+        )
+        weighted_partial_paths, weighted_partial_effects_csv = (
+            plot_selected_weighted_mlg_partial_effects(
+                n_states,
+                comparison['weighted_mlg_model'],
+                comparison['weighted_mlg_X_train'],
+                OUTPUT_DIR,
+            )
         )
         metrics_path, _ = plot_selected_oos_metrics(n_states, OUTPUT_DIR)
         generated_graphs.extend([
@@ -709,17 +993,43 @@ def main():
             metrics_path,
             probability_path,
             mlr_importance_path,
+            pvalue_vif_mlr_importance_path,
             mlg_importance_path,
+            weighted_mlg_importance_path,
             mlr_importance_csv,
+            pvalue_vif_mlr_importance_csv,
             mlg_importance_csv,
+            weighted_mlg_importance_csv,
+            partial_effects_csv,
+            weighted_partial_effects_csv,
             *partial_paths,
+            *weighted_partial_paths,
         ])
 
     summary = DataFrame(all_records)
+    four_model_summary = DataFrame(all_mlg_records)
+    if not four_model_summary.empty:
+        added_columns = [
+            'N_STATES', 'FROM_STATE', 'TO_STATE',
+            'PVIF_MLR_AVERAGE',
+            'MLG_AVERAGE', 'WEIGHTED_MLG_AVERAGE',
+            'PVIF_MLR_MINUS_FIXED',
+            'MLG_MINUS_FIXED', 'WEIGHTED_MLG_MINUS_FIXED',
+            'PVIF_MLR_MINUS_MLR', 'PVIF_MLR_MINUS_MLG',
+            'PVIF_MLR_MINUS_WEIGHTED_MLG',
+            'MLG_MINUS_MLR', 'WEIGHTED_MLG_MINUS_MLR',
+            'WEIGHTED_MLG_MINUS_MLG',
+        ]
+        summary = summary.merge(
+            four_model_summary[added_columns],
+            on=['N_STATES', 'FROM_STATE', 'TO_STATE'],
+            how='left',
+            validate='one_to_one',
+        )
     summary_path = OUTPUT_DIR / 'transition_matrix_summary.csv'
     summary.to_csv(summary_path, index=False)
     mlg_summary_path = OUTPUT_DIR / 'transition_matrix_summary_mlg.csv'
-    DataFrame(all_mlg_records).to_csv(mlg_summary_path, index=False)
+    four_model_summary.to_csv(mlg_summary_path, index=False)
 
     for metric in ['LOG_LOSS', 'BRIER_SCORE']:
         for split in ['validation', 'prediction']:
@@ -731,7 +1041,7 @@ def main():
     print(f'Validation window (lag selection): {TRAIN_END} to {VALIDATION_END}')
     print(f'Prediction window (final comparison): {VALIDATION_END} onward')
     print(f'Summary table saved to: {summary_path}')
-    print(f'Three-model summary table saved to: {mlg_summary_path}')
+    print(f'Five-model summary table saved to: {mlg_summary_path}')
     print('Graphs saved:')
     for path in generated_graphs:
         print(f'- {path}')

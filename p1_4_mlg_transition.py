@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
+from scipy.stats import beta as beta_distribution
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import SplineTransformer
 
@@ -855,46 +856,488 @@ def _partial_effect_frame(model, X_train, term_name):
     return values, labels, effects, contrasts, term.kind
 
 
-def plot_selected_mlg_partial_effects(n_states, model, X_train, output_dir):
-    """Save one centered log-odds partial-effect plot per selected predictor."""
-    output_dir = Path(output_dir) / f'mlg_partial_effects_q{n_states}'
+def _contrast_states(contrast):
+    """Return the numerator and denominator state labels from ``a vs b``."""
+    match = re.fullmatch(r'(-?\d+) vs (-?\d+)', contrast)
+    if match is None:
+        raise ValueError(f'Unsupported log-odds contrast: {contrast}')
+    return int(match.group(1)), int(match.group(2))
+
+
+def _duration_focal_state(term_name):
+    match = re.fullmatch(r'DURATION_STATE_(\d+)', term_name)
+    return int(match.group(1)) if match else None
+
+
+def _term_values(X, term):
+    """Return a scalar plotting value for a raw model term."""
+    if term.kind == 'categorical':
+        return np.argmax(X[term.columns].to_numpy(dtype=float), axis=1).astype(float)
+    return X[term.columns[0]].to_numpy(dtype=float)
+
+
+def _term_grid(X, term):
+    values = _term_values(X, term)
+    unique_values = np.unique(values)
+    if term.kind == 'categorical' or unique_values.size <= 80:
+        return unique_values
+    return np.linspace(float(np.nanmin(values)), float(np.nanmax(values)), 80)
+
+
+def _set_term_value(frame, term, value):
+    """Set one raw term consistently before calculating partial dependence."""
+    if term.kind == 'categorical':
+        frame.loc[:, term.columns] = 0.0
+        frame.loc[:, term.columns[int(value)]] = 1.0
+    else:
+        frame.loc[:, term.columns[0]] = value
+
+
+def _relevant_term_sample(X_train, y_train, meta_train, term_name):
+    """Use the current state matching a state-specific duration term."""
+    sample = X_train.copy()
+    sample['_NEXT_STATE'] = pd.Series(y_train, index=X_train.index)
+    focal_state = _duration_focal_state(term_name)
+    if focal_state is not None:
+        if meta_train is None or 'CURRENT_STATE' not in meta_train:
+            raise ValueError(
+                'meta_train with CURRENT_STATE is required for state-duration plots.'
+            )
+        current_state = meta_train['CURRENT_STATE'].reindex(X_train.index)
+        sample = sample.loc[current_state == focal_state].copy()
+    return sample
+
+
+def _binned_empirical_log_odds(values, next_states, numerator, denominator, categorical):
+    """Estimate observed pairwise log-odds with binning and Jeffreys smoothing."""
+    frame = pd.DataFrame({
+        'VALUE': values,
+        'NEXT_STATE': next_states,
+    }).dropna()
+    frame = frame[frame['NEXT_STATE'].isin([numerator, denominator])].copy()
+    if frame.empty:
+        return pd.DataFrame()
+
+    unique_values = frame['VALUE'].nunique()
+    if categorical or unique_values <= 12:
+        frame['_BIN'] = frame['VALUE']
+    else:
+        # Quantile bins retain observations in sparse tails without hiding the trend.
+        n_bins = min(10, max(4, len(frame) // 25))
+        try:
+            frame['_BIN'] = pd.qcut(
+                frame['VALUE'], q=n_bins, labels=False, duplicates='drop'
+            )
+        except ValueError:
+            frame['_BIN'] = 0
+
+    records = []
+    for _, group in frame.groupby('_BIN', observed=True):
+        numerator_count = int((group['NEXT_STATE'] == numerator).sum())
+        denominator_count = int((group['NEXT_STATE'] == denominator).sum())
+        numerator_smoothed = numerator_count + 0.5
+        denominator_smoothed = denominator_count + 0.5
+        log_odds = np.log(numerator_smoothed / denominator_smoothed)
+        records.append({
+            'PREDICTOR_VALUE': float(group['VALUE'].median()),
+            'OBSERVATION_COUNT': int(len(group)),
+            'NUMERATOR_COUNT': numerator_count,
+            'DENOMINATOR_COUNT': denominator_count,
+            'OBSERVED_LOG_ODDS': log_odds,
+            'OBSERVED_LOG_ODDS_SE': np.sqrt(
+                1.0 / numerator_smoothed + 1.0 / denominator_smoothed
+            ),
+        })
+    return pd.DataFrame(records).sort_values('PREDICTOR_VALUE').reset_index(drop=True)
+
+
+def _fitted_pairwise_log_odds(model, sample_X, term, values, numerator, denominator):
+    """Average fitted pairwise log-odds after varying only the plotted term."""
+    classes = np.asarray(model.classes_)
+    numerator_index = int(np.where(classes == numerator)[0][0])
+    denominator_index = int(np.where(classes == denominator)[0][0])
+    fitted = []
+    for value in values:
+        counterfactual = sample_X.copy()
+        _set_term_value(counterfactual, term, value)
+        probabilities = model.predict_proba(counterfactual)
+        fitted.append(float(np.mean(np.log(
+            np.clip(probabilities[:, numerator_index], 1e-12, 1.0)
+            / np.clip(probabilities[:, denominator_index], 1e-12, 1.0)
+        ))))
+    return np.asarray(fitted)
+
+
+def _common_duration_bins(values, next_states, state_classes, max_bins=10):
+    """Create common duration bins and retain counts for every next state."""
+    frame = pd.DataFrame({
+        'VALUE': values,
+        'NEXT_STATE': next_states,
+    }).dropna()
+    if frame.empty:
+        return pd.DataFrame()
+
+    unique_values = frame['VALUE'].nunique()
+    if unique_values <= 12:
+        frame['_BIN'] = frame['VALUE']
+    else:
+        n_bins = min(max_bins, max(4, len(frame) // 25))
+        try:
+            frame['_BIN'] = pd.qcut(
+                frame['VALUE'], q=n_bins, labels=False, duplicates='drop'
+            )
+        except ValueError:
+            frame['_BIN'] = 0
+
+    records = []
+    for bin_index, (_, group) in enumerate(frame.groupby('_BIN', observed=True)):
+        record = {
+            'BIN_INDEX': bin_index,
+            'BIN_LOWER': float(group['VALUE'].min()),
+            'BIN_MEDIAN': float(group['VALUE'].median()),
+            'BIN_UPPER': float(group['VALUE'].max()),
+            'OBSERVATION_COUNT': int(len(group)),
+        }
+        for state in state_classes:
+            record[f'NEXT_STATE_{state}_COUNT'] = int(
+                (group['NEXT_STATE'] == state).sum()
+            )
+        records.append(record)
+    return pd.DataFrame(records)
+
+
+def _jeffreys_log_odds_interval(numerator_count, denominator_count, alpha=0.05):
+    """Return a pairwise log-odds estimate and Jeffreys credible interval."""
+    numerator_shape = float(numerator_count) + 0.5
+    denominator_shape = float(denominator_count) + 0.5
+    estimate = np.log(numerator_shape / denominator_shape)
+    probability_bounds = beta_distribution.ppf(
+        [alpha / 2, 1 - alpha / 2], numerator_shape, denominator_shape
+    )
+    probability_bounds = np.clip(probability_bounds, 1e-12, 1 - 1e-12)
+    log_odds_bounds = np.log(probability_bounds / (1 - probability_bounds))
+    return estimate, float(log_odds_bounds[0]), float(log_odds_bounds[1])
+
+
+def _duration_bin_label(row):
+    lower = row['BIN_LOWER']
+    upper = row['BIN_UPPER']
+    if lower == upper:
+        return f'{lower:g}'
+    return f'{lower:g}-{upper:g}'
+
+
+def _plot_combined_duration_contrasts(
+    n_states,
+    model,
+    sample_X,
+    next_states,
+    term,
+    term_name,
+    contrasts,
+    grid,
+    output_dir,
+    model_label,
+    extra_record_fields,
+):
+    """Combine all stay-versus-transition duration contrasts on common bins."""
+    focal_state = _duration_focal_state(term_name)
+    if focal_state is None or len(contrasts) <= 1:
+        return None, []
+
+    state_classes = [int(state) for state in model.classes_]
+    bins = _common_duration_bins(
+        _term_values(sample_X, term), next_states, state_classes
+    )
+    if bins.empty:
+        return None, []
+
+    colors = ['#0072B2', '#D55E00', '#009E73', '#CC79A7', '#E69F00']
+    markers = ['o', 's', '^', 'D', 'v']
+    line_styles = ['-', '--', '-.', ':']
+    fig, (ax, count_ax) = plt.subplots(
+        2,
+        1,
+        figsize=(10.8, 7.6),
+        gridspec_kw={'height_ratios': [3.2, 1.35]},
+        constrained_layout=True,
+    )
+    records = []
+    x_span = max(float(grid.max() - grid.min()), 1.0)
+    offsets = np.linspace(-0.0075 * x_span, 0.0075 * x_span, len(contrasts))
+
+    for contrast_index, contrast in enumerate(contrasts):
+        numerator, denominator = _contrast_states(contrast)
+        fitted = _fitted_pairwise_log_odds(
+            model, sample_X, term, grid, numerator, denominator
+        )
+        color = colors[contrast_index % len(colors)]
+        ax.plot(
+            grid,
+            fitted,
+            color=color,
+            linestyle=line_styles[contrast_index % len(line_styles)],
+            linewidth=2.2,
+            label=contrast,
+        )
+
+        observed_x = bins['BIN_MEDIAN'].to_numpy(dtype=float) + offsets[contrast_index]
+        observed_log_odds = []
+        lower_bounds = []
+        upper_bounds = []
+        for row in bins.to_dict('records'):
+            numerator_count = row[f'NEXT_STATE_{numerator}_COUNT']
+            denominator_count = row[f'NEXT_STATE_{denominator}_COUNT']
+            estimate, lower, upper = _jeffreys_log_odds_interval(
+                numerator_count, denominator_count
+            )
+            observed_log_odds.append(estimate)
+            lower_bounds.append(lower)
+            upper_bounds.append(upper)
+            record = {
+                'N_STATES': n_states,
+                'TERM': term_name,
+                'P_VALUE': model.term_p_values[term_name],
+                'ROW_TYPE': 'OBSERVED_BIN',
+                'LOG_ODDS_CONTRAST': contrast,
+                'BIN_INDEX': row['BIN_INDEX'],
+                'BIN_LOWER': row['BIN_LOWER'],
+                'BIN_MEDIAN': row['BIN_MEDIAN'],
+                'BIN_UPPER': row['BIN_UPPER'],
+                'OBSERVATION_COUNT': row['OBSERVATION_COUNT'],
+                'NUMERATOR_COUNT': numerator_count,
+                'DENOMINATOR_COUNT': denominator_count,
+                'OBSERVED_LOG_ODDS': estimate,
+                'CI_LOWER': lower,
+                'CI_UPPER': upper,
+            }
+            for state in state_classes:
+                record[f'NEXT_STATE_{state}_COUNT'] = row[f'NEXT_STATE_{state}_COUNT']
+            record.update(extra_record_fields.get(term_name, {}))
+            records.append(record)
+
+        observed_log_odds = np.asarray(observed_log_odds)
+        lower_bounds = np.asarray(lower_bounds)
+        upper_bounds = np.asarray(upper_bounds)
+        ax.errorbar(
+            observed_x,
+            observed_log_odds,
+            yerr=np.vstack([
+                observed_log_odds - lower_bounds,
+                upper_bounds - observed_log_odds,
+            ]),
+            fmt=markers[contrast_index % len(markers)],
+            markersize=5.5,
+            markerfacecolor='white',
+            markeredgewidth=1.5,
+            color=color,
+            ecolor=color,
+            elinewidth=1.1,
+            capsize=2.5,
+        )
+        for value, fitted_value in zip(grid, fitted):
+            record = {
+                'N_STATES': n_states,
+                'TERM': term_name,
+                'P_VALUE': model.term_p_values[term_name],
+                'ROW_TYPE': 'FITTED_CURVE',
+                'LOG_ODDS_CONTRAST': contrast,
+                'PREDICTOR_VALUE': value,
+                'FITTED_LOG_ODDS': fitted_value,
+            }
+            record.update(extra_record_fields.get(term_name, {}))
+            records.append(record)
+
+    ax.axhline(0, color='black', linewidth=0.9, linestyle=':')
+    ax.set_title(
+        f'q{n_states} {model_label}: duration in state {focal_state}', pad=10
+    )
+    ax.set_xlabel(f'Days currently in state {focal_state}')
+    ax.set_ylabel(f'log[P(next={focal_state}) / P(next=other state)]')
+    ax.legend(title='Next-state contrast', ncol=min(3, len(contrasts)), loc='best')
+    ax.text(
+        0.01,
+        0.02,
+        'Lines: fitted MLG; open markers: observed common-bin log-odds; bars: 95% Jeffreys intervals',
+        transform=ax.transAxes,
+        fontsize=8,
+        va='bottom',
+    )
+
+    count_matrix = bins[
+        [f'NEXT_STATE_{state}_COUNT' for state in state_classes]
+    ].to_numpy(dtype=float).T
+    count_image = count_ax.imshow(
+        np.log1p(count_matrix), aspect='auto', cmap='Blues', interpolation='nearest'
+    )
+    max_intensity = max(float(np.log1p(count_matrix).max()), 1.0)
+    for row_index in range(count_matrix.shape[0]):
+        for column_index in range(count_matrix.shape[1]):
+            intensity = np.log1p(count_matrix[row_index, column_index]) / max_intensity
+            count_ax.text(
+                column_index,
+                row_index,
+                f'{int(count_matrix[row_index, column_index])}',
+                ha='center',
+                va='center',
+                color='white' if intensity > 0.58 else 'black',
+                fontsize=8,
+            )
+    count_ax.set_yticks(np.arange(len(state_classes)))
+    count_ax.set_yticklabels([f'Next state {state}' for state in state_classes])
+    count_ax.set_xticks(np.arange(len(bins)))
+    count_ax.set_xticklabels(
+        [_duration_bin_label(row) for row in bins.to_dict('records')], rotation=30
+    )
+    count_ax.set_xlabel(f'Duration-in-state-{focal_state} bin (days)')
+    count_ax.set_title('Observed transition counts in each common duration bin', fontsize=10)
+    count_image.set_clim(0, max_intensity)
+
+    safe_name = re.sub(r'[^A-Za-z0-9_.-]+', '_', term_name)
+    path = output_dir / f'{safe_name}__all_contrasts.png'
+    fig.savefig(path, dpi=180, bbox_inches='tight')
+    plt.close(fig)
+    return path, records
+
+
+def _plot_selected_transition_effects(
+    n_states,
+    model,
+    X_train,
+    y_train,
+    meta_train,
+    output_dir,
+    directory_name,
+    model_label,
+    extra_record_fields=None,
+):
+    """Plot one observed-versus-fitted log-odds chart for every term contrast."""
+    output_dir = Path(output_dir) / directory_name
     output_dir.mkdir(parents=True, exist_ok=True)
     records = []
+    combined_duration_records = []
     paths = []
+    extra_record_fields = extra_record_fields or {}
 
     for term_name in model.selected_terms:
-        values, labels, effects, contrasts, kind = _partial_effect_frame(model, X_train, term_name)
-        fig, ax = plt.subplots(figsize=(7.2, 4.4), constrained_layout=True)
-        for column, contrast in enumerate(contrasts):
-            if kind == 'categorical':
-                ax.plot(values, effects[:, column], marker='o', label=contrast)
-            else:
-                ax.plot(values, effects[:, column], linewidth=2, label=contrast)
-            for row, value in enumerate(values):
-                records.append({
+        term = model.transformer.term_spec(term_name)
+        sample = _relevant_term_sample(X_train, y_train, meta_train, term_name)
+        if sample.empty:
+            continue
+        sample_X = sample[X_train.columns]
+        term_values = _term_values(sample_X, term)
+        grid = _term_grid(sample_X, term)
+        _, labels, _, contrasts, _ = _partial_effect_frame(model, sample_X, term_name)
+
+        combined_path, combined_records = _plot_combined_duration_contrasts(
+            n_states,
+            model,
+            sample_X,
+            sample['_NEXT_STATE'].to_numpy(dtype=int),
+            term,
+            term_name,
+            contrasts,
+            grid,
+            output_dir,
+            model_label,
+            extra_record_fields,
+        )
+        if combined_path is not None:
+            paths.append(combined_path)
+            combined_duration_records.extend(combined_records)
+
+        for contrast in contrasts:
+            numerator, denominator = _contrast_states(contrast)
+            observed = _binned_empirical_log_odds(
+                term_values,
+                sample['_NEXT_STATE'].to_numpy(dtype=int),
+                numerator,
+                denominator,
+                categorical=term.kind == 'categorical',
+            )
+            fitted = _fitted_pairwise_log_odds(
+                model, sample_X, term, grid, numerator, denominator
+            )
+
+            fig, ax = plt.subplots(figsize=(7.4, 4.6), constrained_layout=True)
+            ax.plot(
+                grid, fitted, color='#1f5a85', linewidth=2.2,
+                label='Fitted MLG partial-dependence curve',
+            )
+            if not observed.empty:
+                ax.errorbar(
+                    observed['PREDICTOR_VALUE'], observed['OBSERVED_LOG_ODDS'],
+                    yerr=1.96 * observed['OBSERVED_LOG_ODDS_SE'],
+                    fmt='o', color='#b04a24', ecolor='#b04a24', capsize=3,
+                    label='Observed binned log-odds (95% approximate CI)',
+                )
+            ax.axhline(0, color='black', linewidth=1, linestyle='--')
+            ax.set_title(f'q{n_states} {model_label}: {term_name} | {contrast}')
+            ax.set_xlabel(term_name)
+            ax.set_ylabel(f'log[P(next={numerator}) / P(next={denominator})]')
+            if term.kind == 'categorical':
+                ax.set_xticks(grid)
+                ax.set_xticklabels(labels)
+            ax.legend(loc='best', fontsize=8)
+
+            safe_name = re.sub(r'[^A-Za-z0-9_.-]+', '_', term_name)
+            contrast_name = f'{numerator}_vs_{denominator}'
+            path = output_dir / f'{safe_name}__{contrast_name}.png'
+            fig.savefig(path, dpi=160, bbox_inches='tight')
+            plt.close(fig)
+            paths.append(path)
+
+            for value, fitted_value in zip(grid, fitted):
+                record = {
                     'N_STATES': n_states,
                     'TERM': term_name,
                     'P_VALUE': model.term_p_values[term_name],
                     'PREDICTOR_VALUE': value,
-                    'PREDICTOR_LEVEL': labels[row] if kind == 'categorical' else None,
                     'LOG_ODDS_CONTRAST': contrast,
-                    'CENTERED_PARTIAL_EFFECT': effects[row, column],
-                })
-
-        ax.axhline(0, color='black', linewidth=1, linestyle='--')
-        ax.set_title(f'q{n_states} MLG partial effect: {term_name}')
-        ax.set_xlabel(term_name)
-        ax.set_ylabel('Centered contribution to log-odds')
-        if kind == 'categorical':
-            ax.set_xticks(values)
-            ax.set_xticklabels(labels)
-        ax.legend(title='Next-state contrast', loc='best')
-        safe_name = re.sub(r'[^A-Za-z0-9_.-]+', '_', term_name)
-        path = output_dir / f'{safe_name}.png'
-        fig.savefig(path, dpi=160, bbox_inches='tight')
-        plt.close(fig)
-        paths.append(path)
+                    'FITTED_LOG_ODDS': fitted_value,
+                }
+                record.update(extra_record_fields.get(term_name, {}))
+                records.append(record)
+            for row in observed.to_dict('records'):
+                record = {
+                    'N_STATES': n_states,
+                    'TERM': term_name,
+                    'P_VALUE': model.term_p_values[term_name],
+                    'PREDICTOR_VALUE': row['PREDICTOR_VALUE'],
+                    'LOG_ODDS_CONTRAST': contrast,
+                    'OBSERVATION_COUNT': row['OBSERVATION_COUNT'],
+                    'NUMERATOR_COUNT': row['NUMERATOR_COUNT'],
+                    'DENOMINATOR_COUNT': row['DENOMINATOR_COUNT'],
+                    'OBSERVED_LOG_ODDS': row['OBSERVED_LOG_ODDS'],
+                    'OBSERVED_LOG_ODDS_SE': row['OBSERVED_LOG_ODDS_SE'],
+                }
+                record.update(extra_record_fields.get(term_name, {}))
+                records.append(record)
 
     effects_path = output_dir / 'partial_effects.csv'
     pd.DataFrame(records).to_csv(effects_path, index=False)
+    if combined_duration_records:
+        pd.DataFrame(combined_duration_records).to_csv(
+            output_dir / 'duration_all_contrasts.csv', index=False
+        )
     return paths, effects_path
+
+
+def plot_selected_mlg_partial_effects(
+    n_states, model, X_train, output_dir, y_train=None, meta_train=None
+):
+    """Save readable observed-versus-fitted charts for every selected MLG contrast."""
+    if y_train is None:
+        raise ValueError('y_train is required to plot observed transition effects.')
+    if meta_train is None:
+        raise ValueError('meta_train is required to plot observed transition effects.')
+    return _plot_selected_transition_effects(
+        n_states,
+        model,
+        X_train,
+        y_train,
+        meta_train,
+        output_dir,
+        f'mlg_partial_effects_q{n_states}',
+        'MLG observed vs fitted transition effect',
+    )

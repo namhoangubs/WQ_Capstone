@@ -173,7 +173,7 @@ def dynamic_comparison_data(n_states):
     )
     if list(mlg_state_classes) != list(state_classes):
         raise ValueError(f'MLR and MLG state classes differ for q{n_states}.')
-    mlg_X_train, _, _ = mlg_splits['train']
+    mlg_X_train, mlg_y_train, mlg_meta_train = mlg_splits['train']
     mlg_X_prediction, mlg_y_prediction, mlg_meta_prediction = mlg_splits['prediction']
     mlg_probabilities = _align_probabilities(
         mlg_model.predict_proba(mlg_X_prediction),
@@ -193,7 +193,9 @@ def dynamic_comparison_data(n_states):
     )
     if list(weighted_mlg_state_classes) != list(state_classes):
         raise ValueError(f'MLR and weighted MLG state classes differ for q{n_states}.')
-    weighted_mlg_X_train, _, _ = weighted_mlg_splits['train']
+    weighted_mlg_X_train, weighted_mlg_y_train, weighted_mlg_meta_train = (
+        weighted_mlg_splits['train']
+    )
     weighted_mlg_X_prediction, weighted_mlg_y_prediction, weighted_mlg_meta_prediction = (
         weighted_mlg_splits['prediction']
     )
@@ -256,6 +258,8 @@ def dynamic_comparison_data(n_states):
         'mlg_probabilities': mlg_probabilities,
         'mlg_model': mlg_model,
         'mlg_X_train': mlg_X_train,
+        'mlg_y_train': mlg_y_train,
+        'mlg_meta_train': mlg_meta_train,
         'mlg_X_prediction': mlg_X_prediction,
         'mlg_y_prediction': mlg_y_prediction,
         'mlg_meta_prediction': mlg_meta_prediction,
@@ -264,6 +268,8 @@ def dynamic_comparison_data(n_states):
         'weighted_mlg_probabilities': weighted_mlg_probabilities,
         'weighted_mlg_model': weighted_mlg_model,
         'weighted_mlg_X_train': weighted_mlg_X_train,
+        'weighted_mlg_y_train': weighted_mlg_y_train,
+        'weighted_mlg_meta_train': weighted_mlg_meta_train,
         'weighted_mlg_X_prediction': weighted_mlg_X_prediction,
         'weighted_mlg_y_prediction': weighted_mlg_y_prediction,
         'weighted_mlg_meta_prediction': weighted_mlg_meta_prediction,
@@ -976,6 +982,8 @@ def main():
             comparison['mlg_model'],
             comparison['mlg_X_train'],
             OUTPUT_DIR,
+            y_train=comparison['mlg_y_train'],
+            meta_train=comparison['mlg_meta_train'],
         )
         weighted_partial_paths, weighted_partial_effects_csv = (
             plot_selected_weighted_mlg_partial_effects(
@@ -983,6 +991,8 @@ def main():
                 comparison['weighted_mlg_model'],
                 comparison['weighted_mlg_X_train'],
                 OUTPUT_DIR,
+                y_train=comparison['weighted_mlg_y_train'],
+                meta_train=comparison['weighted_mlg_meta_train'],
             )
         )
         metrics_path, _ = plot_selected_oos_metrics(n_states, OUTPUT_DIR)

@@ -22,7 +22,7 @@ from p1_4_mlg_transition import (
     MLGFeatureTransformer,
     PreparedMLGDesign,
     SIGNIFICANCE_LEVEL,
-    _partial_effect_frame,
+    _plot_selected_transition_effects,
     load_or_create_mlg_report,
 )
 from project_config import BASE_DIR
@@ -407,53 +407,33 @@ def fit_selected_weighted_mlg_transition(n_states, report=None):
     return model, splits, state_classes, best
 
 
-def plot_selected_weighted_mlg_partial_effects(n_states, model, X_train, output_dir):
-    output_dir = Path(output_dir) / f'weighted_mlg_partial_effects_q{n_states}'
-    output_dir.mkdir(parents=True, exist_ok=True)
-    records = []
-    paths = []
-
-    for term_name in model.selected_terms:
-        values, labels, effects, contrasts, kind = _partial_effect_frame(
-            model, X_train, term_name
-        )
-        fig, ax = plt.subplots(figsize=(7.2, 4.4), constrained_layout=True)
-        for column, contrast in enumerate(contrasts):
-            if kind == 'categorical':
-                ax.plot(values, effects[:, column], marker='o', label=contrast)
-            else:
-                ax.plot(values, effects[:, column], linewidth=2, label=contrast)
-            for row, value in enumerate(values):
-                records.append({
-                    'N_STATES': n_states,
-                    'MODEL': MODEL_NAME,
-                    'TERM': term_name,
-                    'P_VALUE': model.term_p_values[term_name],
-                    'PENALTY_GROUP': term_group(term_name),
-                    'GROUP_PENALTY_WEIGHT': model.term_penalty_weights[term_name],
-                    'PREDICTOR_VALUE': value,
-                    'PREDICTOR_LEVEL': labels[row] if kind == 'categorical' else None,
-                    'LOG_ODDS_CONTRAST': contrast,
-                    'CENTERED_PARTIAL_EFFECT': effects[row, column],
-                })
-
-        ax.axhline(0, color='black', linewidth=1, linestyle='--')
-        ax.set_title(f'q{n_states} weighted MLG partial effect: {term_name}')
-        ax.set_xlabel(term_name)
-        ax.set_ylabel('Centered contribution to log-odds')
-        if kind == 'categorical':
-            ax.set_xticks(values)
-            ax.set_xticklabels(labels)
-        ax.legend(title='Next-state contrast', loc='best')
-        safe_name = re.sub(r'[^A-Za-z0-9_.-]+', '_', term_name)
-        path = output_dir / f'{safe_name}.png'
-        fig.savefig(path, dpi=160, bbox_inches='tight')
-        plt.close(fig)
-        paths.append(path)
-
-    effects_path = output_dir / 'partial_effects.csv'
-    pd.DataFrame(records).to_csv(effects_path, index=False)
-    return paths, effects_path
+def plot_selected_weighted_mlg_partial_effects(
+    n_states, model, X_train, output_dir, y_train=None, meta_train=None
+):
+    """Save one observed-versus-fitted chart for each weighted MLG contrast."""
+    if y_train is None:
+        raise ValueError('y_train is required to plot observed transition effects.')
+    if meta_train is None:
+        raise ValueError('meta_train is required to plot observed transition effects.')
+    extra_fields = {
+        term: {
+            'MODEL': MODEL_NAME,
+            'PENALTY_GROUP': term_group(term),
+            'GROUP_PENALTY_WEIGHT': model.term_penalty_weights[term],
+        }
+        for term in model.selected_terms
+    }
+    return _plot_selected_transition_effects(
+        n_states,
+        model,
+        X_train,
+        y_train,
+        meta_train,
+        output_dir,
+        f'weighted_mlg_partial_effects_q{n_states}',
+        'weighted MLG observed vs fitted transition effect',
+        extra_fields,
+    )
 
 
 def main():

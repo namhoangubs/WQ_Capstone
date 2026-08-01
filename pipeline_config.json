@@ -1,0 +1,158 @@
+{
+  "schema_version": "1.0",
+  "run_scope": "full",
+  "allowed_run_scopes": [
+    "phase_1",
+    "later_phases",
+    "full"
+  ],
+  "data": {
+    "source": "original_paper",
+    "allow_post_2023_extension": false,
+    "initial_train_end_exclusive": "2009-06-02",
+    "validation_end_exclusive": "2017-01-01",
+    "forecast_start": "2017-01-03",
+    "forecast_end": "auto_common_end"
+  },
+  "phase_1": {
+    "n_regimes": 4,
+    "model_specifications_csv": "phase_1_model_specifications.csv",
+    "refit_selected_models_on_train_plus_validation": true,
+    "production_hmm_refit": {
+      "random_restarts": 10,
+      "random_seed": 42,
+      "minimum_regime_observations": 25,
+      "maximum_covariance_condition_number": 100000000.0,
+      "maximum_final_log_likelihood_decrease": 0.001
+    },
+    "later_phase_artifacts": {
+      "selected_model_registry": "phase_1/selected_models_for_later_phases_q4.csv",
+      "require_refit_artifacts": true,
+      "on_missing_registry": "error"
+    },
+    "full_run_model_policy": {
+      "baseline_model_id": "fixed_hmm_transition",
+      "dynamic_model_selection": "auto_best_validation",
+      "allowed_dynamic_model_selection": [
+        "auto_best_validation",
+        "manual_frozen"
+      ],
+      "manual_dynamic_model_id": null,
+      "manual_frozen_model": {
+        "frozen_model_registry": "frozen_transition_models.csv",
+        "require_exactly_one_dynamic_model": true,
+        "required_artifacts": [
+          "hmm_artifact",
+          "fixed_transition_matrix_artifact",
+          "coefficient_file",
+          "preprocessing_file",
+          "fitted_model_artifact"
+        ],
+        "required_artifacts_for_gam_models": [
+          "spline_artifact"
+        ],
+        "on_missing_artifact": "error"
+      }
+    },
+    "cross_model_selection": {
+      "selection_split": "validation",
+      "primary_metric": "LOG_LOSS",
+      "primary_direction": "minimize",
+      "tie_tolerance": 0.0001,
+      "tie_breakers": [
+        {
+          "metric": "MODEL_COMPLEXITY",
+          "direction": "minimize"
+        },
+        {
+          "metric": "BRIER_SCORE",
+          "direction": "minimize"
+        }
+      ],
+      "exclude_forecast_period_from_selection": true
+    }
+  },
+  "portfolio_sampling": {
+    "number_of_samples": 10,
+    "stocks_per_sample": 50,
+    "eligible_universe": "active_1999_and_2023_with_complete_original_history",
+    "without_replacement_within_sample": true,
+    "allow_overlap_across_samples": true,
+    "random_seed": 42,
+    "weighting": "equal",
+    "manifest_directory": "run_outputs/portfolio_manifests",
+    "reuse_existing_manifests": true
+  },
+  "wgan": {
+    "training_mode": "rolling_baseline_faithful",
+    "initial_train_end_exclusive": "2009-06-02",
+    "warmup_end_exclusive": "2017-01-01",
+    "rolling_window_size": 256,
+    "latent_dimension": 128,
+    "training_iterations": 2000,
+    "batch_size": 32,
+    "critic_steps": 5,
+    "gradient_penalty": 10.0,
+    "random_seed": 42,
+    "share_generators_across_transition_models": true
+  },
+  "simulation": {
+    "paths_per_forecast_date": 10000,
+    "random_seed": 42,
+    "paired_random_numbers_across_models": true
+  },
+  "evaluation": {
+    "retain_all_original_paper_tests": true,
+    "original_risk_levels": [
+      0.9,
+      0.95,
+      0.975,
+      0.99
+    ],
+    "primary_scorecard_levels": [
+      0.95,
+      0.99
+    ],
+    "primary_scorecard": [
+      "var_exceedance_rate_error",
+      "kupiec_unconditional_coverage",
+      "christoffersen_independence",
+      "christoffersen_conditional_coverage",
+      "var_quantile_loss",
+      "fissler_ziegel_joint_var_es_loss",
+      "stress_period_tail_risk"
+    ],
+    "stress_periods": [
+      {
+        "name": "covid_19_market_stress",
+        "start": "2020-02-19",
+        "end": "2020-06-30"
+      }
+    ],
+    "portfolio_aggregation": {
+      "paired_model_comparison": true,
+      "confidence_level": 0.95,
+      "bootstrap_replicates": 2000,
+      "report_mean": true,
+      "report_median": true,
+      "report_model_win_rate": true,
+      "report_test_p_value_distributions": true
+    }
+  },
+  "execution": {
+    "resume_completed_work": true,
+    "overwrite_existing_outputs": false,
+    "portfolio_workers": 1,
+    "continue_after_portfolio_failure": true,
+    "save_wgan_checkpoints": true
+  },
+  "outputs": {
+    "root_directory": "run_outputs",
+    "save_portfolio_manifests": true,
+    "save_daily_transition_probabilities": true,
+    "save_daily_risk_forecasts": true,
+    "save_all_simulated_paths": false,
+    "save_original_paper_figures": true,
+    "save_primary_scorecard_figures": true
+  }
+}

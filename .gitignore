@@ -1,0 +1,32 @@
+# Python caches and environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+.wqvenv/
+venv/
+env/
+
+# Local/editor backup files
+*~
+.*.un~
+.ipynb_checkpoints/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Large or generated project artifacts
+Inputs/
+models/
+processed/
+phase_1/
+phase_2/
+simulations/
+stylized_facts/
+risk_management/
+run_outputs/
+
+# Reports and archives generated or bundled outside source code
+*.pdf
+*.zip

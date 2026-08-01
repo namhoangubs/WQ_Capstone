@@ -1,0 +1,19 @@
+{
+  "raw_to_canonical": {
+    "0": 0,
+    "1": 3,
+    "2": 1,
+    "3": 2
+  },
+  "seed": 438878,
+  "calibration_start": "2000-01-03",
+  "calibration_end": "2016-12-30",
+  "exog_columns": [
+    "SPXT",
+    "DBLCIX",
+    "IBOXIG",
+    "JPEICORE",
+    "LT11TRUU",
+    "LBUTTRUU"
+  ]
+}

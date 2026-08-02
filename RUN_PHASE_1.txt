@@ -1,0 +1,107 @@
+RUNNING PHASE 1 ONLY
+=====================
+
+Purpose
+-------
+This run calibrates/refits the q4 HMM and produces the fixed-transition and
+selected dynamic-transition handoff artifacts. It does not train WGANs and
+does not run portfolio simulation or risk backtesting.
+
+Prerequisites
+-------------
+1. Open PowerShell or Anaconda Prompt in the repository root.
+2. Activate an environment containing Python and the project dependencies:
+   pandas, numpy, scipy, scikit-learn, statsmodels, hmmlearn, joblib,
+   matplotlib, TensorFlow, and Keras.
+3. Confirm that these files exist:
+   Inputs/STOCKS.csv
+   Inputs/STOCK_STATUS_1999.csv
+   Inputs/STOCK_STATUS_2023.csv
+   processed/exog_rets.csv
+   processed/stock_rets.csv
+   phase_1/best_params.csv
+   phase_1/stock_rets_q4.csv
+   phase_1/dynamic_transition_report_q4.csv
+   phase_1/mlg_transition_report_q4.csv
+   phase_1/weighted_mlg_transition_report_q4.csv
+   phase_1/pvalue_vif_mlr_transition_report_q4.csv
+   phase_1/state_interaction_mlg_transition_report_q4.csv
+
+Configuration
+-------------
+Open pipeline_config.json and set:
+
+    "run_scope": "phase_1"
+
+The default configuration selects the best eligible dynamic model using
+validation log loss, with model complexity and Brier score as tie-breakers.
+
+To run Phase 1 for one specific dynamic model, keep all rows in
+phase_1_model_specifications.csv but set enabled=false for the other dynamic
+models. Keep these rows enabled:
+
+    fixed_hmm_transition
+    the desired dynamic model
+
+Use the exact model_id from the following table:
+
+    Original MLR                         dynamic_duration_logit
+    P/VIF MLR                            pvalue_vif_selected_mlr
+    Original Regularized MLG             multinomial_logistic_gam
+    Group-Weighted MLG                   group_weighted_multinomial_logistic_gam
+    Duration-Free SI-MLG                 state_interaction_multinomial_logistic_gam
+
+For example, to run Group-Weighted MLG only:
+
+    fixed_hmm_transition: enabled=true, eligible_for_full_selection=false
+    group_weighted_multinomial_logistic_gam: enabled=true,
+        eligible_for_full_selection=true
+
+To run Original Regularized MLG instead, use:
+
+    multinomial_logistic_gam: enabled=true,
+        eligible_for_full_selection=true
+
+and set enabled=false and eligible_for_full_selection=false for
+group_weighted_multinomial_logistic_gam and all other dynamic models.
+
+The same pattern applies to any model in the table. The fixed transition row
+must remain enabled, but its eligible_for_full_selection value must remain
+false because it is the baseline, not a dynamic candidate.
+
+Do not delete rows from the CSV. The Phase 1 code creates the later-phase
+registry automatically; do not manually edit the registry after this run.
+
+Dry run
+-------
+Use the Anaconda interpreter if the Windows python alias is unavailable:
+
+    C:\Users\namho\anaconda3\python.exe run_pipeline.py --config pipeline_config.json --dry-run
+
+The dry run should report q4, the enabled models, and the selected dynamic
+candidate without fitting the HMM or writing production outputs.
+
+Execute Phase 1
+---------------
+
+    C:\Users\namho\anaconda3\python.exe run_pipeline.py --config pipeline_config.json
+
+Main outputs
+------------
+Outputs are written under:
+
+    phase_1/production_q4/
+
+Important handoff files include:
+
+    production_hmm_q4.joblib
+    production_fixed_transition_q4.csv
+    production_transition_probabilities_q4.csv
+    production_stock_rets_q4.csv
+    selected_models_for_later_phases_q4.csv
+
+The selected dynamic model artifacts include its fitted model, coefficients,
+preprocessing file, and spline artifact when the model is a GAM.
+
+The Phase 1 run can now be followed by a later-phase-only run using the
+generated registry.

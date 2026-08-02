@@ -108,7 +108,9 @@ Execution sequence
    run_outputs/portfolio_manifests/
 
 6. For each portfolio, four state-specific WGANs are trained initially and
-   updated on rolling windows through the warm-up period.
+   updated through the warm-up period using adaptive regime memory. Each state
+   starts with a 256-row lookback, expands backward when needed, applies a
+   256-trading-day exponential half-life, and updates only at weighted ESS >= 64.
 7. From the forecast start date, fixed and dynamic transition probabilities
    drive paired simulations using common random numbers.
 8. VaR, ES/CVaR, exceedance tests, quantile loss, joint VaR/ES loss, stress

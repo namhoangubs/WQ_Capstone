@@ -112,6 +112,31 @@ def load_pipeline_config(path=BASE_DIR / "pipeline_config.json"):
         "Fixed and dynamic transitions must share the same WGAN generators.",
     )
     _require(
+        wgan.get("training_mode") == "adaptive_regime_memory_ess_gated",
+        "wgan.training_mode must be 'adaptive_regime_memory_ess_gated'.",
+    )
+    memory = wgan.get("regime_memory", {})
+    _require(
+        memory.get("weighting") == "exponential",
+        "wgan.regime_memory.weighting must be 'exponential'.",
+    )
+    _require(
+        float(memory.get("recency_half_life_trading_days", 0)) > 0,
+        "wgan.regime_memory.recency_half_life_trading_days must be positive.",
+    )
+    _require(
+        float(memory.get("minimum_effective_sample_size", 0)) == 64,
+        "wgan.regime_memory.minimum_effective_sample_size must be 64.",
+    )
+    _require(
+        int(wgan.get("rolling_window_size", 0)) > 0,
+        "wgan.rolling_window_size must be positive.",
+    )
+    _require(
+        int(wgan.get("batch_size", 0)) <= 64,
+        "wgan.batch_size cannot exceed the ESS update threshold of 64.",
+    )
+    _require(
         int(config["execution"].get("portfolio_workers", 0)) == 1,
         "This deterministic TensorFlow runner currently requires portfolio_workers=1.",
     )

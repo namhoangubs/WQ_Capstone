@@ -4,9 +4,10 @@ RUNNING THE LATER PHASE ONLY
 Purpose
 -------
 This run uses an existing Phase 1 handoff to train rolling state-specific
-WGANs, simulate portfolio returns, calculate VaR and ES/CVaR, and compare the
-fixed transition model with exactly one dynamic transition model. It does not
-rerun HMM calibration or dynamic-model selection.
+WGANs with adaptive regime memory and ESS-gated updates, simulate portfolio
+returns, calculate VaR and ES/CVaR, and compare the fixed transition model
+with exactly one dynamic transition model. It does not rerun HMM calibration
+or dynamic-model selection.
 
 Prerequisites
 -------------
@@ -92,6 +93,16 @@ The default experiment uses 10 independent portfolios of 50 stocks, equal
 weights, 10,000 simulation paths per forecast date, WGAN warm-up through 2016,
 and risk forecasts beginning on 2017-01-03.
 
+Adaptive WGAN regime memory
+---------------------------
+Each of the four regime-specific WGANs starts with observations for its state
+inside the latest 256 pre-forecast trading rows. If weighted effective sample
+size (ESS) is below 64, the state memory expands backward through the available
+history. Older observations receive exponential weights with a 256-trading-day
+half-life. The WGAN updates only when weighted ESS is at least 64; otherwise it
+retains its last valid weights. The forecast-date return is never used in that
+date's update.
+
 Dry run
 -------
 
@@ -121,7 +132,12 @@ Important files include:
     rolling_250_day_exceedances.csv
     simulated_state_counts.csv
     portfolio_real_returns.csv
+    wgan_ess_diagnostics.png
     wgan_checkpoints/
+
+wgan_loss_report.csv records whether each state update was applied, weighted
+ESS, the number of observations in the original 256-row window, the adaptive
+memory lookback, and the memory date range.
 
 The aggregate comparison is written under:
 

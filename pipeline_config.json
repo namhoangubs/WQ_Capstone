@@ -84,10 +84,15 @@
     "reuse_existing_manifests": true
   },
   "wgan": {
-    "training_mode": "rolling_baseline_faithful",
+    "training_mode": "adaptive_regime_memory_ess_gated",
     "initial_train_end_exclusive": "2009-06-02",
     "warmup_end_exclusive": "2017-01-01",
     "rolling_window_size": 256,
+    "regime_memory": {
+      "weighting": "exponential",
+      "recency_half_life_trading_days": 256,
+      "minimum_effective_sample_size": 64
+    },
     "latent_dimension": 128,
     "training_iterations": 2000,
     "batch_size": 32,

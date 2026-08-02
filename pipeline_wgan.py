@@ -54,9 +54,101 @@ def _load_portfolio_inputs(config, registry, manifest):
     return stock, probabilities, tickers
 
 
+def _effective_sample_size(weights):
+    """Return Kish's effective sample size for non-negative weights."""
+    weights = np.asarray(weights, dtype=float)
+    if weights.size == 0:
+        return 0.0
+    total = float(weights.sum())
+    squared_total = float(np.square(weights).sum())
+    if not np.isfinite(total) or not np.isfinite(squared_total) or squared_total <= 0:
+        return 0.0
+    return total**2 / squared_total
+
+
+def _adaptive_regime_memory(
+    stock,
+    position,
+    state,
+    tickers,
+    settings,
+    *,
+    use_full_history=False,
+):
+    """Build a causal, recency-weighted memory for one HMM regime."""
+    history = stock.iloc[:position]
+    state_positions = np.flatnonzero(history["STATE"].to_numpy() == state)
+    memory_settings = settings["regime_memory"]
+    threshold = float(memory_settings["minimum_effective_sample_size"])
+    half_life = float(memory_settings["recency_half_life_trading_days"])
+    base_window = int(settings["rolling_window_size"])
+
+    if state_positions.size == 0:
+        return {
+            "data": np.empty((0, len(tickers)), dtype=np.float32),
+            "weights": np.empty(0, dtype=float),
+            "metadata": {
+                "OBSERVATIONS_AVAILABLE": 0,
+                "BASE_WINDOW_OBSERVATIONS": 0,
+                "EFFECTIVE_SAMPLE_SIZE": 0.0,
+                "ESS_THRESHOLD": threshold,
+                "RECENCY_HALF_LIFE": half_life,
+                "MEMORY_LOOKBACK_ROWS": 0,
+                "MEMORY_START_DATE": "",
+                "MEMORY_END_DATE": "",
+            },
+        }
+
+    # Scaling all weights by a common factor leaves both ESS and sampling
+    # probabilities unchanged. Anchoring at the newest state observation avoids
+    # numerical underflow when a regime has been absent for a long period.
+    ages = position - 1 - state_positions
+    relative_ages = ages - ages.min()
+    all_weights = np.exp2(-relative_ages / half_life)
+    reverse_sum = np.cumsum(all_weights[::-1])[::-1]
+    reverse_squared_sum = np.cumsum(np.square(all_weights[::-1]))[::-1]
+    suffix_ess = np.square(reverse_sum) / reverse_squared_sum
+
+    if use_full_history:
+        selected_start = 0
+        base_count = int(state_positions.size)
+    else:
+        base_start_position = max(0, position - base_window)
+        base_start = int(np.searchsorted(state_positions, base_start_position))
+        base_count = int(state_positions.size - base_start)
+        latest_allowed_start = min(base_start, state_positions.size - 1)
+        eligible = np.flatnonzero(
+            (np.arange(state_positions.size) <= latest_allowed_start)
+            & (suffix_ess >= threshold)
+        )
+        # If the threshold cannot be reached, retain all available state data
+        # for diagnostics; the ESS gate will prevent a training update.
+        selected_start = int(eligible.max()) if eligible.size else 0
+
+    selected_positions = state_positions[selected_start:]
+    selected_weights = all_weights[selected_start:]
+    selected_ess = _effective_sample_size(selected_weights)
+    selected_frame = history.iloc[selected_positions]
+    return {
+        "data": selected_frame[tickers].to_numpy(dtype=np.float32),
+        "weights": selected_weights,
+        "metadata": {
+            "OBSERVATIONS_AVAILABLE": int(state_positions.size),
+            "BASE_WINDOW_OBSERVATIONS": base_count,
+            "EFFECTIVE_SAMPLE_SIZE": selected_ess,
+            "ESS_THRESHOLD": threshold,
+            "RECENCY_HALF_LIFE": half_life,
+            "MEMORY_LOOKBACK_ROWS": int(position - selected_positions[0]),
+            "MEMORY_START_DATE": str(selected_frame.index.min()),
+            "MEMORY_END_DATE": str(selected_frame.index.max()),
+        },
+    }
+
+
 def _fit_wgan_window(
     state,
     state_data,
+    sample_weights,
     networks,
     optimizers,
     settings,
@@ -72,24 +164,37 @@ def _fit_wgan_window(
     iterations = int(settings["training_iterations"])
     critic_steps = int(settings["critic_steps"])
     penalty_weight = float(settings["gradient_penalty"])
-    if len(state_data) == 0:
+    ess_threshold = float(
+        settings["regime_memory"]["minimum_effective_sample_size"]
+    )
+    effective_sample_size = _effective_sample_size(sample_weights)
+    if len(state_data) == 0 or effective_sample_size < ess_threshold:
         return {
             "STATE": state,
             "WINDOW": window_number,
-            "LENGTH": 0,
+            "LENGTH": len(state_data),
             "ITERATIONS_COMPLETED": 0,
             "CRITIC_LOSS": np.nan,
             "GENERATOR_LOSS": np.nan,
             "CRITIC_LOSS_SLOPE": np.nan,
+            "UPDATE_APPLIED": False,
+            "UPDATE_REASON": "ess_below_threshold",
         }
 
     losses = []
     critic_loss_value = generator_loss_value = np.nan
     slope = np.nan
     state_data = np.asarray(state_data, dtype=np.float32)
+    sampling_probabilities = np.asarray(sample_weights, dtype=float)
+    sampling_probabilities /= sampling_probabilities.sum()
     for iteration in range(iterations):
         for _ in range(critic_steps):
-            indexes = rng.choice(len(state_data), size=batch_size, replace=len(state_data) < batch_size)
+            indexes = rng.choice(
+                len(state_data),
+                size=batch_size,
+                replace=False,
+                p=sampling_probabilities,
+            )
             real_data = tf.convert_to_tensor(state_data[indexes])
             z = tf.random.normal((batch_size, latent_dimension))
             with tf.GradientTape() as tape:
@@ -144,6 +249,8 @@ def _fit_wgan_window(
         "CRITIC_LOSS": critic_loss_value,
         "GENERATOR_LOSS": generator_loss_value,
         "CRITIC_LOSS_SLOPE": slope,
+        "UPDATE_APPLIED": True,
+        "UPDATE_REASON": "ess_at_or_above_threshold",
     }
 
 
@@ -210,8 +317,53 @@ def _save_loss_plot(loss_report, path):
     plt.close(figure)
 
 
+def _save_ess_plot(loss_report, path):
+    if loss_report.empty or "EFFECTIVE_SAMPLE_SIZE" not in loss_report:
+        return
+    states = sorted(loss_report["STATE"].unique())
+    figure, axes = plt.subplots(2, 2, figsize=(11, 7), sharex=True, sharey=True)
+    for axis, state in zip(axes.flat, states):
+        frame = loss_report[loss_report["STATE"].eq(state)].sort_values("DATE")
+        threshold = float(frame["ESS_THRESHOLD"].iloc[0])
+        applied = frame["UPDATE_APPLIED"].astype(bool)
+        axis.plot(
+            frame["DATE"],
+            frame["EFFECTIVE_SAMPLE_SIZE"],
+            color="#1f5a85",
+            linewidth=0.75,
+        )
+        axis.scatter(
+            frame.loc[~applied, "DATE"],
+            frame.loc[~applied, "EFFECTIVE_SAMPLE_SIZE"],
+            color="#b44620",
+            marker="x",
+            s=10,
+            linewidths=0.7,
+            label="Update frozen",
+        )
+        axis.axhline(
+            threshold,
+            color="black",
+            linestyle="--",
+            linewidth=0.8,
+            label=f"ESS gate = {threshold:g}",
+        )
+        axis.set_title(f"State {state}")
+        axis.grid(alpha=0.2)
+    for axis in axes[:, 0]:
+        axis.set_ylabel("Weighted ESS")
+    for axis in axes[-1, :]:
+        axis.set_xlabel("Update date")
+    handles, labels = axes.flat[0].get_legend_handles_labels()
+    figure.legend(handles, labels, loc="upper center", ncol=2, frameon=False)
+    figure.suptitle("Adaptive regime-memory ESS and frozen WGAN updates", y=0.98)
+    figure.tight_layout(rect=(0, 0, 1, 0.94))
+    figure.savefig(path, dpi=180)
+    plt.close(figure)
+
+
 def run_portfolio_pipeline(config, registry, manifest):
-    """Train one shared WGAN and compare fixed versus dynamic transitions."""
+    """Train state WGANs shared by the fixed and dynamic transition models."""
     sample_id = int(manifest["SAMPLE_ID"].iloc[0])
     output_root = resolve_project_path(
         config["outputs"]["root_directory"], config["_project_root"]
@@ -282,29 +434,59 @@ def run_portfolio_pipeline(config, registry, manifest):
     dynamic_id = next(model_id for model_id in representative if model_id != "fixed_hmm_transition")
     initialized = stock.iloc[:initial_count]
     for state in range(n_states):
-        state_data = initialized.loc[initialized["STATE"].eq(state), tickers].to_numpy()
-        result = _fit_wgan_window(
-            state, state_data, networks, optimizers, wgan, 0, rng, components
+        memory = _adaptive_regime_memory(
+            stock,
+            initial_count,
+            state,
+            tickers,
+            wgan,
+            use_full_history=True,
         )
+        result = _fit_wgan_window(
+            state,
+            memory["data"],
+            memory["weights"],
+            networks,
+            optimizers,
+            wgan,
+            0,
+            rng,
+            components,
+        )
+        result.update(memory["metadata"])
         result["DATE"] = initialized.index.max()
         result["UPDATE_TYPE"] = "initial"
         loss_rows.append(result)
+        if not result["UPDATE_APPLIED"]:
+            raise ValueError(
+                f"State {state} has initial weighted ESS "
+                f"{result['EFFECTIVE_SAMPLE_SIZE']:.2f}, below the required "
+                f"threshold {result['ESS_THRESHOLD']:.0f}; a valid initial "
+                "state WGAN cannot be trained."
+            )
 
     warmup_checkpoint_saved = False
     levels = config["evaluation"]["original_risk_levels"]
     path_count = int(config["simulation"]["paths_per_forecast_date"])
-    rolling_window = int(wgan["rolling_window_size"])
     for position in range(initial_count, len(stock)):
         date = stock.index[position]
+        rolling_window = int(wgan["rolling_window_size"])
         window = stock.iloc[max(0, position - rolling_window):position]
         # The first post-cutoff forecast uses the initial fit. Subsequent updates
         # contain only observations available before the date being forecast.
         if position > initial_count:
             for state in range(n_states):
-                state_data = window.loc[window["STATE"].eq(state), tickers].to_numpy()
+                memory = _adaptive_regime_memory(
+                    stock,
+                    position,
+                    state,
+                    tickers,
+                    wgan,
+                )
                 result = _fit_wgan_window(
                     state,
-                    state_data,
+                    memory["data"],
+                    memory["weights"],
                     networks,
                     optimizers,
                     wgan,
@@ -312,6 +494,7 @@ def run_portfolio_pipeline(config, registry, manifest):
                     rng,
                     components,
                 )
+                result.update(memory["metadata"])
                 result["DATE"] = date
                 result["UPDATE_TYPE"] = "rolling"
                 loss_rows.append(result)
@@ -384,6 +567,7 @@ def run_portfolio_pipeline(config, registry, manifest):
             output_dir / f"representative_simulated_returns_{model_id}.csv"
         )
     _save_loss_plot(loss_report, output_dir / "wgan_critic_loss.png")
+    _save_ess_plot(loss_report, output_dir / "wgan_ess_diagnostics.png")
     if config["outputs"].get("save_original_paper_figures", True):
         save_portfolio_risk_figures(
             forecasts, rolling, output_dir / "original_paper_risk_diagnostics"
@@ -414,6 +598,13 @@ def run_portfolio_pipeline(config, registry, manifest):
             "sample_id": sample_id,
             "dynamic_model_id": dynamic_id,
             "stock_count": n_stocks,
+            "wgan_training_mode": wgan["training_mode"],
+            "wgan_ess_update_threshold": wgan["regime_memory"][
+                "minimum_effective_sample_size"
+            ],
+            "wgan_recency_half_life_trading_days": wgan["regime_memory"][
+                "recency_half_life_trading_days"
+            ],
             "forecast_start": str(forecasts["DATE"].min()),
             "forecast_end": str(forecasts["DATE"].max()),
             "forecast_observations_per_model": int(len(forecasts) / 3),

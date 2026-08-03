@@ -562,9 +562,9 @@ def build_document():
 
     # Page 10
     add_title(doc, "9. Portfolio experiment and final scorecard", "Why results are aggregated across portfolios rather than judged from one stock draw.")
-    add_body(doc, "The default experiment draws 10 independent equal-weight portfolios of 50 eligible stocks. A stock cannot repeat within one portfolio but may appear in another. The exact manifests are saved, making the experiment reproducible.")
+    add_body(doc, "The default experiment jointly constructs 10 equal-weight portfolios of 50 eligible stocks using a balanced low-overlap design. In the current 183-stock universe, every stock appears two or three times and each portfolio pair shares only 10 or 11 stocks. The exact manifests, overlap matrix, and inclusion frequencies are saved for reproducibility.")
     add_equation(doc, "Delta_s = Score_dynamic,s - Score_fixed,s", "For loss metrics, Delta_s < 0 means the dynamic model outperformed fixed transition in portfolio s.")
-    add_equation(doc, "CI_95 = percentile_bootstrap( mean(Delta_s) )", "Bootstrap resampling across portfolios quantifies uncertainty in the average performance difference.")
+    add_equation(doc, "CI_95 = percentile_bootstrap( mean(Delta_s) )", "Bootstrap summarizes variation across broad portfolio compositions; overlap diagnostics make residual dependence transparent.")
     add_small_table(
         doc,
         ["Output", "What it contains", "Use in presentation"],
@@ -584,7 +584,7 @@ def build_document():
     add_callout(doc, "1. Regimes", "Markets do not have one stable return distribution; the HMM summarizes changing market conditions using four latent regimes.", PALE_BLUE, BLUE)
     add_callout(doc, "2. Transitions", "The fixed model assumes regime switching follows a constant historical matrix, while the dynamic model allows current market information to alter the next-regime probabilities.", PALE_TEAL, TEAL)
     add_callout(doc, "3. Returns", "Conditional on the simulated next regime, an ESS-gated state WGAN generates a multivariate stock-return distribution without retraining on an information-poor rare-state sample.", PALE_BLUE, BLUE)
-    add_callout(doc, "4. Decision", "We judge dynamic transitions by whether they improve out-of-sample VaR and ES forecasts across multiple randomly drawn portfolios without weakening statistical backtests.", PALE_GOLD, GOLD)
+    add_callout(doc, "4. Decision", "We judge dynamic transitions by whether they improve out-of-sample VaR and ES forecasts across multiple balanced low-overlap portfolios without weakening statistical backtests.", PALE_GOLD, GOLD)
     doc.add_heading("Questions the audience is likely to ask", level=1)
     add_bullet(doc, "Does the dynamic model change stock-return generation? No. It changes only the mixture weights over state-specific WGAN generators.")
     add_bullet(doc, "Why use common random numbers? To make fixed and dynamic results comparable path by path.")

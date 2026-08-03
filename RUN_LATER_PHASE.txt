@@ -89,9 +89,19 @@ Keep the selected-model registry path as:
     "selected_model_registry":
         "phase_1/selected_models_for_later_phases_q4.csv"
 
-The default experiment uses 10 independent portfolios of 50 stocks, equal
-weights, 10,000 simulation paths per forecast date, WGAN warm-up through 2016,
-and risk forecasts beginning on 2017-01-03.
+The default experiment uses 10 balanced low-overlap portfolios of 50 stocks,
+equal weights, 10,000 simulation paths per forecast date, WGAN warm-up through
+2016, and risk forecasts beginning on 2017-01-03.
+
+Portfolio sampling design
+-------------------------
+The default sampling_design is balanced_low_overlap. It jointly constructs all
+10 portfolios rather than drawing them independently: each eligible stock is
+assigned as evenly as possible across portfolios while each portfolio still
+contains 50 distinct stocks. For the current 183-stock universe, every stock
+appears two or three times and pairwise portfolio overlap is 10 or 11 stocks.
+The generated manifest folder records portfolio_overlap_matrix.csv,
+portfolio_stock_inclusion_frequency.csv, and portfolio_sampling_summary.json.
 
 Adaptive WGAN regime memory
 ---------------------------

@@ -107,6 +107,12 @@ Execution sequence
 
    run_outputs/portfolio_manifests/
 
+   The default balanced_low_overlap design creates 10 portfolios of 50 stocks
+   from the eligible universe while making each stock appear as evenly as
+   possible across portfolios. portfolio_overlap_matrix.csv and
+   portfolio_stock_inclusion_frequency.csv document the resulting overlap and
+   inclusion counts.
+
 6. For each portfolio, four state-specific WGANs are trained initially and
    updated through the warm-up period using adaptive regime memory. Each state
    starts with a 256-row lookback, expands backward when needed, applies a

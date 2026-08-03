@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from itertools import combinations
 from pathlib import Path
 
 import numpy as np
@@ -86,6 +87,21 @@ def load_pipeline_config(path=BASE_DIR / "pipeline_config.json"):
         "Stocks must be sampled without replacement within each portfolio.",
     )
     _require(sampling.get("weighting") == "equal", "Only equal portfolio weights are supported.")
+    _require(
+        sampling.get("sampling_design") in {
+            "independent_random",
+            "balanced_low_overlap",
+        },
+        "portfolio_sampling.sampling_design must be independent_random or balanced_low_overlap.",
+    )
+    _require(
+        int(sampling.get("balanced_construction_attempts", 0)) > 0,
+        "portfolio_sampling.balanced_construction_attempts must be positive.",
+    )
+    _require(
+        int(sampling.get("pairwise_swap_iterations", 0)) >= 0,
+        "portfolio_sampling.pairwise_swap_iterations cannot be negative.",
+    )
 
     simulation = config.get("simulation", {})
     _require(
@@ -212,6 +228,206 @@ def _manifest_path(directory, sample_number):
     return Path(directory) / f"portfolio_{sample_number:02d}.csv"
 
 
+def _sampling_summary_path(directory):
+    return Path(directory) / "portfolio_sampling_summary.json"
+
+
+def _balanced_column_targets(total, column_count, rng):
+    """Spread a fixed number of assignments as evenly as possible over columns."""
+    base, remainder = divmod(int(total), int(column_count))
+    targets = np.full(column_count, base, dtype=int)
+    if remainder:
+        targets[rng.permutation(column_count)[:remainder]] += 1
+    return targets
+
+
+def _pairwise_overlap_matrix(assignment):
+    """Return portfolio-by-portfolio ticker overlap counts."""
+    return np.asarray(assignment, dtype=int).T @ np.asarray(assignment, dtype=int)
+
+
+def _pairwise_overlap_objective(assignment):
+    overlaps = _pairwise_overlap_matrix(assignment)
+    upper = overlaps[np.triu_indices_from(overlaps, k=1)].astype(float)
+    if upper.size == 0:
+        return 0.0
+    return float(np.square(upper - upper.mean()).sum())
+
+
+def _allocate_replication_group(
+    assignment,
+    stock_indexes,
+    replication_count,
+    column_targets,
+    pair_overlaps,
+    rng,
+):
+    """Allocate one replication group while preserving exact portfolio capacities."""
+    if replication_count == 0:
+        return np.array(column_targets, dtype=int)
+
+    remaining = np.asarray(column_targets, dtype=int).copy()
+    for stock_index in rng.permutation(stock_indexes):
+        available = np.flatnonzero(remaining > 0)
+        if available.size < replication_count:
+            return None
+        candidates = list(combinations(available, replication_count))
+        capacity_sums = np.array(
+            [remaining[list(candidate)].sum() for candidate in candidates], dtype=int
+        )
+        # Capacity is the primary feasibility criterion. Pair overlap is the
+        # secondary criterion that spreads shared stocks across portfolio pairs.
+        highest_capacity = capacity_sums.max()
+        capacity_candidates = [
+            candidate
+            for candidate, capacity in zip(candidates, capacity_sums)
+            if capacity == highest_capacity
+        ]
+        pair_scores = np.array(
+            [
+                sum(pair_overlaps[left, right] for left, right in combinations(candidate, 2))
+                for candidate in capacity_candidates
+            ],
+            dtype=float,
+        )
+        best_candidates = [
+            candidate
+            for candidate, score in zip(capacity_candidates, pair_scores)
+            if score == pair_scores.min()
+        ]
+        selected = best_candidates[int(rng.integers(len(best_candidates)))]
+        assignment[stock_index, list(selected)] = 1
+        remaining[list(selected)] -= 1
+        for left, right in combinations(selected, 2):
+            pair_overlaps[left, right] += 1
+            pair_overlaps[right, left] += 1
+    return remaining if not remaining.any() else None
+
+
+def _improve_pairwise_overlap(assignment, rng, iterations):
+    """Use incidence-preserving swaps to flatten pairwise portfolio overlap."""
+    assignment = np.asarray(assignment, dtype=np.int8)
+    portfolio_count = assignment.shape[1]
+    if portfolio_count < 2 or iterations == 0:
+        return assignment
+    portfolio_pairs = list(combinations(range(portfolio_count), 2))
+    objective = _pairwise_overlap_objective(assignment)
+    for _ in range(int(iterations)):
+        left, right = portfolio_pairs[int(rng.integers(len(portfolio_pairs)))]
+        left_only = np.flatnonzero(
+            (assignment[:, left] == 1) & (assignment[:, right] == 0)
+        )
+        right_only = np.flatnonzero(
+            (assignment[:, right] == 1) & (assignment[:, left] == 0)
+        )
+        if not left_only.size or not right_only.size:
+            continue
+        left_stock = int(left_only[rng.integers(left_only.size)])
+        right_stock = int(right_only[rng.integers(right_only.size)])
+        candidate = assignment.copy()
+        candidate[left_stock, left], candidate[left_stock, right] = 0, 1
+        candidate[right_stock, right], candidate[right_stock, left] = 0, 1
+        candidate_objective = _pairwise_overlap_objective(candidate)
+        if candidate_objective < objective:
+            assignment = candidate
+            objective = candidate_objective
+    return assignment
+
+
+def _balanced_low_overlap_assignment(
+    universe,
+    sample_count,
+    stocks_per_sample,
+    rng,
+    construction_attempts,
+    pairwise_swap_iterations,
+):
+    """Construct a reproducible low-overlap assignment with balanced inclusions."""
+    universe_size = len(universe)
+    total_assignments = int(sample_count) * int(stocks_per_sample)
+    minimum_replications, extra_replications = divmod(total_assignments, universe_size)
+    replication_counts = np.full(universe_size, minimum_replications, dtype=int)
+    if extra_replications:
+        replication_counts[rng.permutation(universe_size)[:extra_replications]] += 1
+
+    best_assignment = None
+    best_objective = np.inf
+    for _ in range(int(construction_attempts)):
+        assignment = np.zeros((universe_size, sample_count), dtype=np.int8)
+        pair_overlaps = np.zeros((sample_count, sample_count), dtype=int)
+        success = True
+        # Allocate the higher-replication group first. Its portfolio targets are
+        # balanced before the lower-replication group fills the residual slots.
+        high_replication = minimum_replications + 1
+        high_indexes = np.flatnonzero(replication_counts == high_replication)
+        high_targets = _balanced_column_targets(
+            len(high_indexes) * high_replication, sample_count, rng
+        )
+        if high_targets.max(initial=0) > stocks_per_sample:
+            success = False
+        elif _allocate_replication_group(
+            assignment,
+            high_indexes,
+            high_replication,
+            high_targets,
+            pair_overlaps,
+            rng,
+        ) is None:
+            success = False
+
+        low_indexes = np.flatnonzero(replication_counts == minimum_replications)
+        low_targets = np.repeat(stocks_per_sample, sample_count) - high_targets
+        if success and _allocate_replication_group(
+            assignment,
+            low_indexes,
+            minimum_replications,
+            low_targets,
+            pair_overlaps,
+            rng,
+        ) is None:
+            success = False
+        if not success:
+            continue
+        if not np.array_equal(assignment.sum(axis=1), replication_counts):
+            continue
+        if not np.all(assignment.sum(axis=0) == stocks_per_sample):
+            continue
+
+        assignment = _improve_pairwise_overlap(
+            assignment, rng, pairwise_swap_iterations
+        )
+        objective = _pairwise_overlap_objective(assignment)
+        if objective < best_objective:
+            best_assignment = assignment
+            best_objective = objective
+
+    if best_assignment is None:
+        raise PipelineConfigError(
+            "Could not construct balanced low-overlap portfolios. Increase "
+            "balanced_construction_attempts or revise the portfolio dimensions."
+        )
+    return best_assignment, replication_counts
+
+
+def _sampling_diagnostics(universe, assignment, sampling):
+    overlaps = _pairwise_overlap_matrix(assignment)
+    pairwise = overlaps[np.triu_indices_from(overlaps, k=1)]
+    frequencies = assignment.sum(axis=1).astype(int)
+    return {
+        "sampling_design": sampling["sampling_design"],
+        "random_seed": int(sampling["random_seed"]),
+        "eligible_universe_size": int(len(universe)),
+        "portfolio_count": int(assignment.shape[1]),
+        "stocks_per_portfolio": int(assignment.shape[0] and assignment.sum(axis=0)[0]),
+        "total_assignments": int(assignment.sum()),
+        "minimum_stock_inclusion_count": int(frequencies.min()),
+        "maximum_stock_inclusion_count": int(frequencies.max()),
+        "pairwise_overlap_minimum": int(pairwise.min()) if pairwise.size else 0,
+        "pairwise_overlap_mean": float(pairwise.mean()) if pairwise.size else 0.0,
+        "pairwise_overlap_maximum": int(pairwise.max()) if pairwise.size else 0,
+    }
+
+
 def validate_portfolio_manifest(frame, universe, stocks_per_sample):
     required = {"SAMPLE_ID", "POSITION", "TICKER", "WEIGHT", "SAMPLING_SEED"}
     _require(required.issubset(frame.columns), f"Portfolio manifest columns missing: {sorted(required - set(frame.columns))}")
@@ -223,7 +439,7 @@ def validate_portfolio_manifest(frame, universe, stocks_per_sample):
 
 
 def create_or_load_portfolio_manifests(config, write=True):
-    """Create deterministic independent draws and persist their exact ticker membership."""
+    """Create deterministic portfolio manifests and persist exact membership."""
     sampling = config["portfolio_sampling"]
     project_root = Path(config["_project_root"])
     directory = resolve_project_path(sampling["manifest_directory"], project_root)
@@ -236,30 +452,81 @@ def create_or_load_portfolio_manifests(config, write=True):
     )
 
     rng = np.random.default_rng(int(sampling["random_seed"]))
-    manifests = []
     if write:
         directory.mkdir(parents=True, exist_ok=True)
+    manifest_paths = [_manifest_path(directory, number) for number in range(1, sample_count + 1)]
+    summary_path = _sampling_summary_path(directory)
+    reusable = sampling.get("reuse_existing_manifests", True) and all(
+        path.exists() for path in manifest_paths
+    )
+    if reusable and sampling["sampling_design"] == "balanced_low_overlap":
+        _require(
+            summary_path.exists(),
+            "Balanced low-overlap manifests require portfolio_sampling_summary.json. "
+            "Set reuse_existing_manifests=false to regenerate legacy manifests.",
+        )
+        with summary_path.open("r", encoding="utf-8") as handle:
+            summary = json.load(handle)
+        _require(
+            summary.get("sampling_design") == "balanced_low_overlap",
+            "Existing manifests were not created with balanced_low_overlap. "
+            "Set reuse_existing_manifests=false to regenerate them.",
+        )
+    if reusable:
+        return [
+            validate_portfolio_manifest(pd.read_csv(path), universe, stocks_per_sample)
+            for path in manifest_paths
+        ]
+
+    if sampling["sampling_design"] == "independent_random":
+        assignment = np.zeros((len(universe), sample_count), dtype=np.int8)
+        for sample_number in range(sample_count):
+            selected = rng.choice(len(universe), size=stocks_per_sample, replace=False)
+            assignment[selected, sample_number] = 1
+    else:
+        assignment, _ = _balanced_low_overlap_assignment(
+            universe,
+            sample_count,
+            stocks_per_sample,
+            rng,
+            sampling["balanced_construction_attempts"],
+            sampling["pairwise_swap_iterations"],
+        )
+
+    manifests = []
     for sample_number in range(1, sample_count + 1):
-        path = _manifest_path(directory, sample_number)
-        if sampling.get("reuse_existing_manifests", True) and path.exists():
-            frame = pd.read_csv(path)
-        else:
-            tickers = rng.choice(universe, size=stocks_per_sample, replace=False)
-            frame = pd.DataFrame({
-                "SAMPLE_ID": sample_number,
-                "POSITION": np.arange(1, stocks_per_sample + 1),
-                "TICKER": tickers,
-                "WEIGHT": np.repeat(1.0 / stocks_per_sample, stocks_per_sample),
-                "SAMPLING_SEED": int(sampling["random_seed"]),
-            })
-            if write:
-                frame.to_csv(path, index=False)
+        selected = np.flatnonzero(assignment[:, sample_number - 1])
+        tickers = np.asarray(universe, dtype=object)[selected]
+        frame = pd.DataFrame({
+            "SAMPLE_ID": sample_number,
+            "POSITION": np.arange(1, stocks_per_sample + 1),
+            "TICKER": tickers,
+            "WEIGHT": np.repeat(1.0 / stocks_per_sample, stocks_per_sample),
+            "SAMPLING_SEED": int(sampling["random_seed"]),
+            "SAMPLING_DESIGN": sampling["sampling_design"],
+        })
+        if write:
+            frame.to_csv(manifest_paths[sample_number - 1], index=False)
         manifests.append(validate_portfolio_manifest(frame, universe, stocks_per_sample))
 
     if write:
         pd.concat(manifests, ignore_index=True).to_csv(
             directory / "portfolio_manifest_all.csv", index=False
         )
+        overlap_labels = [f"PORTFOLIO_{number:02d}" for number in range(1, sample_count + 1)]
+        overlap = pd.DataFrame(
+            _pairwise_overlap_matrix(assignment),
+            index=overlap_labels,
+            columns=overlap_labels,
+        )
+        overlap.index.name = "PORTFOLIO"
+        overlap.to_csv(directory / "portfolio_overlap_matrix.csv")
+        pd.DataFrame({
+            "TICKER": universe,
+            "PORTFOLIO_INCLUSION_COUNT": assignment.sum(axis=1).astype(int),
+        }).to_csv(directory / "portfolio_stock_inclusion_frequency.csv", index=False)
+        with summary_path.open("w", encoding="utf-8") as handle:
+            json.dump(_sampling_diagnostics(universe, assignment, sampling), handle, indent=2)
     return manifests
 
 

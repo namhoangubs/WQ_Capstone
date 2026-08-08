@@ -1,8 +1,20 @@
-# WorldQuant Capstone: HMM-WGAN Stock Market Simulator
+# WorldQuant Capstone: Integrated HMM-WGAN Risk Pipeline
 
-This repository contains a Python implementation of an HMM-WGAN stock market simulator inspired by the Quantitative Finance paper:
+This repository implements a reproducible stock-market simulation and risk
+measurement pipeline inspired by the paper **"Stock market simulator using
+hidden Markov generative model and its application in risk measurement."**
 
-**"Stock market simulator using hidden Markov generative model and its application in risk measurement"**
+The current implementation extends the original research code with:
+
+- honest train/validation/forecast splits;
+- fixed-HMM versus dynamic regime-transition comparison;
+- production refitting and immutable portfolio manifests;
+- regime-conditional rolling WGAN-GP training;
+- paired Monte Carlo risk forecasts;
+- ten independent 50-stock portfolios;
+- optimized TensorFlow execution on NVIDIA A100 GPUs;
+- strict output validation and SLURM failure handling;
+- an Athena/PLGrid array-job workflow.
 
 Project members:
 
@@ -10,406 +22,454 @@ Project members:
 - Hieu Ha
 - Nam Hoang
 
-The model combines:
+## Current Production Experiment
 
-- **Hidden Markov Models (HMM)** to identify hidden market regimes, called "market painters" in the paper.
-- **Wasserstein GAN with gradient penalty (WGAN-GP)** to learn and simulate stock-return distributions inside each market regime.
-- **Stylized-fact and risk-management diagnostics** to compare simulated returns with real market behavior.
+The checked-in production configuration is `pipeline_config.json`.
 
-## Project Goal
+| Setting | Production value |
+|---|---:|
+| HMM regimes | 4 |
+| HMM production refit restarts | 10 |
+| Portfolios | 10 |
+| Stocks per portfolio | 50 |
+| Initial WGAN iteration limit | 2,000 per regime |
+| Rolling WGAN iteration limit | 10 per applied regime update |
+| WGAN batch size | 32 |
+| Critic steps | 5 |
+| Latent dimension | 128 |
+| Rolling regime-memory base window | 256 trading days |
+| Recency half-life | 256 trading days |
+| Minimum weighted effective sample size | 64 |
+| Forecast start | 2017-01-03 |
+| Forecast end | latest common available date |
+| Monte Carlo paths | 10,000 per model and forecast date |
 
-The project tries to simulate realistic multivariate stock returns. The core idea is:
+The fixed HMM transition is always retained as the baseline. The current
+selected dynamic candidate is:
 
 ```text
-market index returns -> HMM market regimes -> WGAN by regime -> simulated stock returns -> risk and stylized-fact checks
+group_weighted_multinomial_logistic_gam
 ```
 
-Instead of training one generator on all historical market days, the project first separates days into hidden regimes. For example, calm risk-on periods and stress/risk-off periods should not be treated as the same type of market environment.
+## End-to-End Design
 
-## Pipeline Overview
+```text
+market and stock data
+        |
+        v
+four-state production HMM and canonical state labels
+        |
+        +---------------- fixed HMM transition probabilities
+        |
+        +---------------- selected dynamic transition probabilities
+        |
+        v
+four shared regime-conditional WGAN generators per portfolio
+        |
+        v
+paired fixed/dynamic simulations using common random numbers
+        |
+        v
+VaR, ES/CVaR, exceedance tests, loss functions and diagnostics
+        |
+        v
+validated per-portfolio outputs and aggregate scorecard
+```
 
-| Phase | Script | Purpose |
+### Fixed and dynamic models
+
+"Fixed" and "dynamic" refer to the **regime-transition layer**, not to two
+separate WGAN systems.
+
+- The fixed model uses the HMM transition matrix.
+- The dynamic model predicts date-specific next-state probabilities from the
+  selected transition specification.
+- Both models share the same four state-specific WGAN generators.
+- Both models use paired uniform and latent random draws, which reduces Monte
+  Carlo noise in their comparison.
+- A normal return model is retained as an additional risk benchmark.
+
+This isolates the effect of changing transition probabilities from the effect
+of changing generated returns within a state.
+
+## Production Pipeline
+
+| Stage | Main implementation | Responsibility |
 |---|---|---|
-| Data preparation | `p0_1_raw_to_rets.py` | Converts raw prices into log returns for exogenous indexes and stocks. |
-| HMM candidate search | `p1_0_hmm_params.py` | Trains many HMM candidates with different random seeds. |
-| HMM model selection | `p1_1_best_params.py` | Selects the best HMM seed for each regime setup. |
-| HMM labeling | `p1_2_hmm.py` | Fits final HMMs, labels each day with a `STATE`, and saves transition matrices. |
-| WGAN training | `p2_2_wgan.py` | Trains WGAN generators by market regime and rolling window. |
-| Simulation | `p3_0_sims.py` | Simulates future regimes and stock returns. |
-| Univariate diagnostics | `p3_1_stat_prop.py` | Checks stylized facts such as autocorrelation, heavy tails, volatility clustering, leverage, and gain/loss asymmetry. |
-| Multivariate diagnostics | `p3_2_stat_prop_mv.py` | Checks correlation, eigenvalues, MST node degree, and heatmaps. |
-| Risk management | `p3_3_risk_man.py` | Compares normal-model VaR and HMM-WGAN VaR. |
-| Full orchestration | `p0_0_orchestration.py` | Runs the full pipeline. This can be very expensive. |
+| Configuration and validation | `pipeline_runtime.py` | Loads configuration, validates scientific invariants, and manages portfolio manifests. |
+| Phase 1 orchestration | `pipeline_phase1.py` | Selects/refits the HMM and dynamic transition candidate and produces the later-phase registry. |
+| Dynamic transition candidates | `p1_4_dynamic_transition.py`, `p1_4_mlg_transition.py`, `p1_10_weighted_mlg_transition.py`, `p1_11_pvalue_vif_mlr_transition.py`, `p1_12_state_interaction_mlg_transition.py` | Fits and evaluates the eligible dynamic transition models. |
+| WGAN and simulation | `pipeline_wgan.py` | Trains four rolling regime WGANs and produces paired fixed/dynamic simulations. |
+| Risk evaluation | `pipeline_risk.py` | Calculates VaR/ES forecasts, scores, exceedance statistics, and comparison figures. |
+| Original-paper diagnostics | `p3_1_stat_prop.py`, `p3_2_stat_prop_mv.py` | Produces univariate and multivariate stylized-fact diagnostics. |
+| CLI entry point | `run_pipeline.py` | Supports dry runs, preparation, individual portfolios, aggregation, and full execution. |
+| Portfolio validator | `validate_optimized_portfolio.py` | Checks completeness, finite values, model/date coverage, state counts, paths, and iteration settings. |
 
-## HMM Phase In Plain Language
+## Scientific Data Splits
 
-The HMM phase is the regime-labeling engine.
+The transition-model experiment uses explicit date-based information sets.
 
-It reads exogenous market returns such as:
+| Split | Purpose |
+|---|---|
+| Training: through 2009-06-01 | Fits transition candidates and the initial production models. |
+| Validation: 2009-06-02 through 2016-12-30 | Selects the dynamic candidate without using forecast data. |
+| Forecast: from 2017-01-03 | Final out-of-sample fixed-versus-dynamic comparison. |
 
-- `SPXT`: S&P 500 total return
-- `DBLCIX`: Commodity index
-- `IBOXIG`: Investment-grade corporate credit
-- `JPEICORE`: Emerging-market credit
-- `LT11TRUU`: Long Treasury bonds
-- `LBUTTRUU`: Inflation-linked bonds
+The prediction period is excluded from model selection. Production artifacts
+are refit according to `pipeline_config.json` after selection.
 
-Then it learns hidden regimes:
+## Adaptive Regime Memory
+
+Each rolling state update is causal: only observations strictly before the
+forecast date are eligible.
+
+The update begins with a 256-row lookback. If a regime is sparse, the memory is
+expanded backward and exponentially weighted. Training is applied only when
+Kish weighted effective sample size is at least 64. Otherwise, that state keeps
+its last valid WGAN weights and the skipped update is recorded.
+
+This prevents unstable fitting on a small number of effective observations.
+
+## WGAN Performance Improvements
+
+The production WGAN retains the original network dimensions and WGAN-GP
+hyperparameters while improving execution substantially:
+
+- one compiled `tf.function` covers a complete WGAN iteration;
+- critic optimizer variables are built once;
+- the parameter-free TensorFlow Addons Maxout behavior is implemented locally;
+- generator output for critic updates is created outside the critic gradient
+  tape and stopped from retaining the generator graph;
+- rolling critic-loss history persists by state, matching the source stopping
+  logic;
+- weighted bootstrap batches use replacement;
+- unused Python objects are collected periodically;
+- simulation paths are summarized rather than all written to disk;
+- progress logs report elapsed time, ETA, average iterations, and ESS skips.
+
+TensorFlow operation determinism and explicit random seeds are enabled for
+reproducibility. Exact reproducibility still requires the same hardware and
+software stack.
+
+## Installation
+
+The supported production environment is Linux with Python 3.11 and an NVIDIA
+GPU. Athena uses:
+
+```bash
+module purge
+module load GCCcore/12.3.0
+module load Python/3.11.3
+
+python -m venv .venv-capstone
+source .venv-capstone/bin/activate
+export PYTHONNOUSERSITE=1
+
+python -m pip install --upgrade pip
+python -m pip install -r requirements-athena.txt
+python -m pip check
+```
+
+The production dependency list includes TensorFlow CUDA support and the final
+diagnostic packages `powerlaw`, `seaborn`, and `networkx`.
+
+`requirements.txt` is retained for the legacy scripts. Use
+`requirements-athena.txt` for the integrated production pipeline.
+
+## Required Data
+
+The following inputs are required but intentionally excluded from Git:
 
 ```text
-observed exogenous returns -> hidden STATE
+Inputs/STOCKS.csv
+Inputs/STOCK_STATUS_1999.csv
+Inputs/STOCK_STATUS_2023.csv
+processed/exog_rets.csv
+processed/stock_rets.csv
 ```
 
-For `N_STATES = 2`, the code uses `SPXT` and `LT11TRUU`.
+Generated Phase 1 artifacts are written below `phase_1/`. Large inputs,
+outputs, environments, logs, weights, PDFs, and archives are ignored by Git.
 
-For `N_STATES = 4`, the code uses all six exogenous indexes.
+## Local Validation
 
-The output is stock-return data with an added `STATE` column:
+Validate syntax:
+
+```bash
+python -m py_compile \
+  run_pipeline.py pipeline_phase1.py pipeline_runtime.py \
+  pipeline_risk.py pipeline_wgan.py p2_0_utils.py \
+  validate_optimized_portfolio.py \
+  verify_optimized_wgan_runtime.py \
+  verify_postprocessing_runtime.py
+```
+
+Run the lightweight tests:
+
+```bash
+python -m unittest -v \
+  test_pipeline_wgan_adaptive_memory.py \
+  test_pipeline_portfolio_sampling.py \
+  test_validate_optimized_portfolio.py
+```
+
+The current suite contains 11 tests covering adaptive memory, ESS gating,
+causality, deterministic balanced portfolios, manifest diagnostics, strict CSV
+boolean parsing, and production-output validation.
+
+## Pipeline Commands
+
+### Inspect the production plan
+
+```bash
+python run_pipeline.py \
+  --config pipeline_config.json \
+  --run-scope later_phases \
+  --dry-run
+```
+
+### Run/refit Phase 1 and prepare immutable manifests
+
+```bash
+python run_pipeline.py \
+  --config pipeline_config.json \
+  --run-scope full \
+  --prepare-only
+```
+
+If production Phase 1 artifacts already exist and are validated, preparation
+can use `--run-scope later_phases`.
+
+### Run one portfolio
+
+```bash
+python run_pipeline.py \
+  --config pipeline_config.json \
+  --run-scope later_phases \
+  --portfolio-id 1
+```
+
+### Aggregate completed portfolios
+
+```bash
+python run_pipeline.py \
+  --config pipeline_config.json \
+  --run-scope later_phases \
+  --aggregate-only
+```
+
+Aggregation requires all ten configured portfolios and refuses partial sets.
+
+## Athena / PLGrid Execution
+
+The repository includes production scripts for one A100 per portfolio:
 
 ```text
-DATE, STOCK_A, STOCK_B, ..., STATE
+slurm/athena_full_array.slurm
+slurm/athena_aggregate.slurm
+slurm/athena_postprocessing_check.slurm
 ```
 
-Later, WGAN trains separate generators for each state.
-
-## What Was Improved From The Original Code
-
-The original code was useful research code, but several parts made it hard to reproduce, move, or audit. This version improves project structure and the HMM model-selection logic.
-
-| Area | Original Code | Improved Code | Benefit |
-|---|---|---|---|
-| Project paths | Hard-coded `D:\Finance\WQ_Capstone-main\WQ_Capstone-main` in many scripts. | Added `project_config.py` with `BASE_DIR = Path(__file__).resolve().parent`. | Code can run from a different folder without manually editing scripts. |
-| Dependencies | No dependency file. | Added `requirements.txt`. | Easier setup with one install command. |
-| README | Minimal instructions only. | Expanded README with project explanation, pipeline map, setup, and verification steps. | Improvements are visible directly on GitHub. |
-| HMM convergence | Used last likelihood movement to mark convergence. | Uses `hmm.monitor_.converged`. | More correct use of `hmmlearn` convergence status. |
-| HMM best-parameter selection | Used a risky `while len(params) > 0` loop and returned many tied rows. | Uses explicit filtering and deterministic sorting. | Safer, clearer, and reproducible. |
-| HMM selected output | Old selector could return thousands of "best" rows. | New selector returns one best row per HMM setup. | Downstream code no longer silently depends on row order. |
-| Benchmarking | No benchmark for HMM selection behavior. | Added `benchmark_hmm_selection.py`. | You can compare old vs new selection logic without retraining HMMs. |
-| Git tracking | Generated files could be accidentally committed. | Added `.gitignore`. | Keeps GitHub focused on code instead of large data/model outputs. |
-
-Current improved HMM selection output:
-
-```csv
-N_STATES,SEED,MIN_COUNT
-2,607953,304
-4,46920,41
-```
-
-The benchmark on the existing `phase_1/hmm_params.csv` showed:
+The production array requests, per task:
 
 ```text
-Old selector rows: 2591
-New selector rows: 2
+1 NVIDIA A100 GPU
+16 CPU cores
+120 GB RAM
+48-hour limit
 ```
 
-This does not change the HMM-WGAN method from the publication. It makes the implementation more deterministic and easier to defend.
+Update `PROJECT_DIR`, `VENV_DIR`, account, and partition directives if the
+Athena allocation or project location differs from the checked-in example.
 
-## Dynamic Transition Experiment - HMM Only
+### Pre-submission checks
 
-The capstone extension proposes improving only the regime-transition layer first, without touching WGAN. To keep this clean, the new transition experiment is separated into its own modules.
+```bash
+mkdir -p logs
 
-| New File | Responsibility | Comparison To Baseline |
-|---|---|---|
-| `p1_3_transition_features.py` | Builds supervised transition features from HMM states, exogenous-return lags, regime duration, and state-duration interactions. | The old code used only the current regime and the fixed HMM transition matrix. |
-| `p1_4_dynamic_transition.py` | Trains and evaluates a dynamic multinomial logistic transition model. | Compares dynamic `P(q[t+1] | features at t)` against fixed `A[q[t]]`. |
-| `benchmark_dynamic_transition.py` | Runs the HMM-only benchmark for `q2` and `q4`. | Produces fixed-vs-dynamic metrics without retraining WGAN. |
-| `p1_5_transition_comparison.py` | Creates transition-matrix comparison tables and graphs. | Visualizes observed transitions, fixed HMM transitions, dynamic average transitions, and metric differences. |
-| `p1_6_duration_hazard.py` | Fits a duration-hazard scheme where exit probability is forced to rise with time spent in a regime. | Tests the "regimes age" hypothesis against the fixed HMM. |
+bash -n slurm/athena_full_array.slurm
+bash -n slurm/athena_aggregate.slurm
+bash -n slurm/athena_postprocessing_check.slurm
 
-This experiment evaluates only regime transitions:
+python -m pip check
+```
+
+The array script fails before training unless it can:
+
+- find the configuration, selected-model registry, and portfolio manifest;
+- import every final diagnostic dependency;
+- detect exactly one TensorFlow GPU;
+- compile and run the optimized WGAN step;
+- verify the expected parameter-free Maxout model sizes.
+
+### Production pilot
+
+Run one portfolio before committing the full allocation:
+
+```bash
+pilot_job=$(sbatch --parsable --array=1-1 slurm/athena_full_array.slurm)
+echo "$pilot_job"
+```
+
+Monitor it:
+
+```bash
+squeue -j "$pilot_job"
+tail -f "logs/full-${pilot_job}_1.out"
+```
+
+Validate completion:
+
+```bash
+python validate_optimized_portfolio.py \
+  run_outputs/portfolio_01 \
+  --production
+```
+
+### Remaining portfolios and aggregation
+
+```bash
+array_job=$(sbatch --parsable --array=2-10%9 slurm/athena_full_array.slurm)
+
+aggregate_job=$(sbatch --parsable \
+  --dependency="afterok:${array_job}" \
+  slurm/athena_aggregate.slurm)
+
+echo "Array: $array_job"
+echo "Aggregation: $aggregate_job"
+```
+
+For a clean full rerun, submit `--array=1-10%10`.
+
+Detailed instructions are in `ATHENA_SUBMISSION_RUNBOOK.md`.
+
+## Monitoring and Completion
+
+Monitor array state and resource use:
+
+```bash
+squeue -j "$array_job"
+
+sacct -j "$array_job" \
+  --format=JobID,State,ExitCode,Elapsed,ReqMem,MaxRSS
+```
+
+Progress logs distinguish the pre-2017 WGAN warm-up stage from the forecast
+stage. The first ETA is dominated by TensorFlow graph compilation; use later
+progress observations for runtime estimates.
+
+A portfolio is complete only when:
+
+- SLURM reports `COMPLETED` and `ExitCode=0:0`;
+- `run_outputs/portfolio_XX/SUCCESS.json` exists;
+- `validate_optimized_portfolio.py --production` reports `status: valid`;
+- final generator checkpoints exist.
+
+The SLURM cleanup trap returns a nonzero exit code when a command fails, the job
+is interrupted, or the success marker is missing.
+
+## Post-Processing Verification
+
+Original-paper diagnostics are deliberately tested separately because they run
+after the expensive training/simulation stage.
+
+If an incomplete run already contains full forecast CSVs, verify the complete
+diagnostic path without retraining. For portfolio 10:
+
+```bash
+postcheck_job=$(sbatch --parsable --array=10-10 \
+  slurm/athena_postprocessing_check.slurm)
+```
+
+The check runs both univariate and multivariate diagnostics for the fixed and
+dynamic models and requires 48 non-empty artifacts.
+
+## Outputs
+
+Each portfolio writes to `run_outputs/portfolio_XX/`:
 
 ```text
-current regime + lagged regimes + exogenous returns + duration
--> predicted next regime
+SUCCESS.json
+daily_risk_forecasts.csv
+risk_scores.csv
+rolling_250_day_exceedances.csv
+simulated_state_counts.csv
+portfolio_real_returns.csv
+representative_simulated_returns_<model>.csv
+wgan_loss_report.csv
+wgan_critic_loss.png
+wgan_ess_diagnostics.png
+wgan_checkpoints/
+original_paper_risk_diagnostics/
+original_paper_stylized_facts/
 ```
 
-It does **not** train WGAN, load WGAN weights, or generate synthetic stock returns.
-
-### Train, Validation, And Prediction Windows
-
-Every transition model is evaluated with the same explicit date-based split. The train cutoff matches `TRAIN_DATE` in `p1_2_hmm.py`, so the fixed HMM and every new model carry exactly the same information set. Nothing after the train cutoff is used for fitting, and the prediction window is never used for fitting or model selection.
-
-| Split | Dates | Rows (q4) | Used For |
-|---|---|---:|---|
-| Train | 2000-01-03 to 2009-06-01 | 2,318 | Fitting the fixed HMM (Baum-Welch), the dynamic logit, and the hazard betas. |
-| Validation | 2009-06-02 to 2016-12-30 | 1,890 | Selecting the lag configuration of the dynamic logit. Nothing else. |
-| Prediction | 2017-01-03 to 2023-12-05 | 1,730 | The final out-of-sample comparison reported below. |
-
-Every row of every report CSV carries a `SPLIT` column plus `SPLIT_START` and `SPLIT_END` dates, so it is always visible which window a metric belongs to.
-
-### Model 1: Dynamic Multinomial Logit
-
-`p1_4_dynamic_transition.py` fits a standardized multinomial logistic regression on the train window using state dummies, lagged exogenous returns, regime duration, and duration-state interactions. Class weighting is **not** used: an earlier version used `class_weight='balanced'`, which inflated rare-regime transition probabilities by up to 20x versus observed frequencies and made the Brier score worse than the fixed baseline. Removing it fixed calibration.
-
-Run:
-
-```powershell
-python benchmark_dynamic_transition.py
-```
-
-Result on the prediction window (2017-2023, out-of-sample for both models, lags chosen on validation only):
-
-| Setup | Metric | Fixed HMM | Dynamic Logit | Interpretation |
-|---|---|---:|---:|---|
-| `q2` | Log-loss | `0.181` | `0.187` | No improvement for the 2-state HMM. |
-| `q4` | Log-loss | `0.752` | `0.497` | Clear improvement in next-regime probability quality. |
-| `q4` | Accuracy | `0.874` | `0.872` | Essentially tied. |
-| `q4` | Brier score | `0.226` | `0.227` | Essentially tied; calibration is healthy. |
-
-The lag grid also shows that lagged state dummies add nothing (identical log-loss for `STATE_LAG` 0, 1, 2): the predictive signal comes from duration and same-day exogenous returns.
-
-### Model 2: Duration-Hazard Scheme (Rejected By The Data)
-
-`p1_6_duration_hazard.py` tests the economic intuition that regimes "age": the longer the market has stayed in a regime, the more likely it should be to exit. The scheme keeps the fixed HMM matrix as the base and adds a hazard on the diagonal:
+The aggregate job writes:
 
 ```text
-logit(P_stay(state i, duration d)) = logit(P_ii_fixed) - beta_i * ln(d),  beta_i >= 0
+run_outputs/run_summary.json
+run_outputs/aggregate_comparison/all_portfolio_risk_scores.csv
+run_outputs/aggregate_comparison/paired_portfolio_scores.csv
+run_outputs/aggregate_comparison/primary_scorecard_summary.csv
+run_outputs/aggregate_comparison/backtest_p_value_summary.csv
 ```
 
-`beta_i = 0` recovers the fixed HMM exactly. Betas are fitted by maximum likelihood on the train window only.
+## Legacy Research Scripts
 
-Run:
+The original script-by-script implementation is preserved for reference:
 
-```powershell
-python p1_6_duration_hazard.py
-```
+| Legacy phase | Scripts |
+|---|---|
+| Raw data preparation | `p0_1_raw_to_rets.py` |
+| HMM seed search and labeling | `p1_0_hmm_params.py`, `p1_1_best_params.py`, `p1_2_hmm.py` |
+| Original WGAN training | `p2_1_wgan_plt.py`, `p2_2_wgan.py` |
+| Original simulation and risk | `p3_0_sims.py`, `p3_3_risk_man.py` |
+| Legacy orchestration | `p0_0_orchestration.py` |
 
-Result: **the maximum-likelihood fit pushes every beta to the zero boundary** for both `q2` and `q4`, so the best allowed version of the scheme is identical to the fixed HMM. When the constraint is removed as a diagnostic, every state prefers a **negative** beta (q4: -0.26, -0.18, -0.08, -0.14), and forcing positive betas strictly worsens the out-of-sample log-loss (q4 prediction window: `0.752` at beta 0, `0.767` at beta 0.25, `0.828` at beta 0.5).
-
-The reason is visible in the observed data: the empirical probability of staying **rises** with duration in every state (q4 state 0: about 0.73 on day 1 up to about 0.97 after 60+ days). Day-one spells contain many one-day regime flickers that immediately revert, while long-lived spells are the most stable. Daily HMM regime labels therefore show a *decreasing* exit hazard, which is the opposite of the aging intuition, and no `beta >= 0` can fit an upward-sloping stay curve.
-
-Conclusion: duration **is** predictive, but in the direction of persistence, not exit. The dynamic logit exploits this correctly and beats the fixed HMM on `q4`; the imposed rising-exit-hazard scheme cannot beat the fixed HMM because it fights the data. If the practical goal is to prevent unrealistically long simulated regimes in Phase 3, that is better handled with an explicit duration cap in the simulator than by distorting the estimated transition probabilities.
-
-### Reproducing The Comparison Outputs
-
-```powershell
-python benchmark_dynamic_transition.py
-python p1_5_transition_comparison.py
-python p1_6_duration_hazard.py
-```
-
-Reports are saved under `phase_1/`:
-
-```text
-dynamic_transition_report_q2.csv
-dynamic_transition_report_q4.csv
-duration_hazard_report_q2.csv
-duration_hazard_report_q4.csv
-duration_hazard_betas.csv
-```
-
-Graphs and matrix tables are saved under `phase_1/transition_comparison/`:
-
-```text
-transition_matrix_summary.csv
-duration_hazard_matrix_summary.csv
-transition_matrix_fixed_only_q1.png
-transition_matrix_comparison_q2.png
-transition_matrix_comparison_q4.png
-transition_matrix_hazard_q2.png
-transition_matrix_hazard_q4.png
-duration_stay_probability_q2.png
-duration_stay_probability_q4.png
-duration_hazard_stay_q2.png
-duration_hazard_stay_q4.png
-transition_log_loss_delta_grid_validation.png
-transition_log_loss_delta_grid_prediction.png
-transition_brier_score_delta_grid_validation.png
-transition_brier_score_delta_grid_prediction.png
-```
-
-Important: the dynamic models do not have one fixed transition matrix. For comparison, the scripts report the average predicted transition probabilities on the prediction window, grouped by current HMM state.
-
-### HMM Transition Result Snapshots
-
-The full `phase_1/` output folder is ignored by Git because it is generated data. Important result snapshots are copied into `docs/hmm_transition_results/` so they are visible on GitHub.
-
-Summary tables:
-
-```text
-docs/hmm_transition_results/transition_matrix_summary.csv
-docs/hmm_transition_results/duration_hazard_matrix_summary.csv
-docs/hmm_transition_results/duration_hazard_betas.csv
-```
-
-Fixed HMM versus dynamic-logit average transition matrices on the prediction window:
-
-![q2 transition matrix comparison](docs/hmm_transition_results/transition_matrix_comparison_q2.png)
-
-![q4 transition matrix comparison](docs/hmm_transition_results/transition_matrix_comparison_q4.png)
-
-Dynamic-logit duration-dependent stay probabilities (prediction window):
-
-![q2 duration stay probability](docs/hmm_transition_results/duration_stay_probability_q2.png)
-
-![q4 duration stay probability](docs/hmm_transition_results/duration_stay_probability_q4.png)
-
-Duration-hazard scheme versus observed stay probabilities (the fitted betas are zero, so the hazard curve collapses onto the fixed HMM line while the observed curve rises):
-
-![q2 duration hazard stay probability](docs/hmm_transition_results/duration_hazard_stay_q2.png)
-
-![q4 duration hazard stay probability](docs/hmm_transition_results/duration_hazard_stay_q4.png)
-
-Metric deltas across lag settings (validation is used for selection, prediction is the out-of-sample check):
-
-![transition log-loss delta grid validation](docs/hmm_transition_results/transition_log_loss_delta_grid_validation.png)
-
-![transition log-loss delta grid prediction](docs/hmm_transition_results/transition_log_loss_delta_grid_prediction.png)
-
-This is why the extension should be validated at the transition layer before being connected to WGAN.
+The integrated `run_pipeline.py` workflow is the supported path for the current
+fixed-versus-dynamic experiment and Athena execution.
 
 ## Repository Structure
 
 | Path | Description |
 |---|---|
-| `Inputs/` | Raw input data. Ignored by Git. |
-| `processed/` | Processed prices and returns. Ignored by Git. |
-| `phase_1/` | HMM outputs. Ignored by Git. |
-| `phase_2/` | WGAN training outputs. Ignored by Git. |
-| `models/` | WGAN model weights. Ignored by Git. |
-| `simulations/` | Simulated returns. Ignored by Git. |
-| `stylized_facts/` | Diagnostic plots and text outputs. Ignored by Git. |
-| `risk_management/` | VaR outputs. Ignored by Git. |
-| `docs/hmm_transition_results/` | GitHub-visible snapshots of selected HMM transition comparison results. |
-| `project_config.py` | Shared portable project path configuration. |
-| `requirements.txt` | Python dependencies. |
-| `benchmark_hmm_selection.py` | Old-vs-new HMM selector benchmark. |
-| `p1_5_transition_comparison.py` | HMM transition comparison graph generator. |
-| `p1_6_duration_hazard.py` | Duration-hazard transition scheme fit and evaluation. |
+| `pipeline_*.py` | Integrated production phases and shared runtime logic. |
+| `run_pipeline.py` | Main command-line entry point. |
+| `p1_*.py` | HMM and dynamic transition model implementations. |
+| `p2_0_utils.py` | WGAN networks, Maxout, gradient penalty, and stopping rules. |
+| `p3_*.py` | Original simulation and diagnostic implementations. |
+| `slurm/` | Generic and Athena-specific batch scripts. |
+| `docs/` | GitHub-visible reference result snapshots. |
+| `phase_1_model_specifications.csv` | Candidate enablement and selection policy. |
+| `pipeline_config.json` | Production experiment configuration. |
+| `pipeline_config_smoke.json` | Small functional-test configuration. |
+| `requirements-athena.txt` | Integrated Linux/Athena dependencies. |
+| `ATHENA_SUBMISSION_RUNBOOK.md` | Step-by-step production runbook. |
 
-Generated data, model weights, PDFs, zip files, virtual environments, and caches are intentionally excluded from Git by `.gitignore`.
+## Reproducibility and Storage Notes
 
-## Setup On Windows PowerShell
+- Portfolio manifests are deterministic and should not be regenerated midway
+  through an experiment.
+- Completed portfolios are resumed only when `SUCCESS.json` exists.
+- An incomplete non-empty output folder is rejected unless it is moved aside or
+  overwrite behavior is explicitly enabled.
+- All simulation paths are not stored; daily distribution summaries and one
+  representative stock-return vector per transition model are retained.
+- `run_outputs/`, environments, logs, checkpoints, archives, inputs, generated
+  Phase 1 artifacts, and other large research outputs are excluded from Git.
+- Use the same Python, TensorFlow, CUDA, dependency versions, hardware class,
+  configuration, manifests, and random seeds for reproducible reruns.
 
-From the project folder:
+## Git Branch
 
-```powershell
-cd "D:\Finance\WQ_Capstone-main\WQ_Capstone-main"
-```
-
-Create and activate an environment:
-
-```powershell
-py -m venv .venv
-.\.venv\Scripts\Activate.ps1
-```
-
-Install dependencies:
-
-```powershell
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-```
-
-If PowerShell blocks environment activation, run:
-
-```powershell
-Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
-```
-
-Then activate again.
-
-## Recommended Verification Steps
-
-Start with lightweight checks before running the full model.
-
-### 1. Check Python syntax
-
-```powershell
-python -m py_compile project_config.py p0_1_raw_to_rets.py p1_0_hmm_params.py p1_1_best_params.py p1_2_hmm.py benchmark_hmm_selection.py
-```
-
-### 2. Verify the HMM selection improvement
-
-This does not retrain all HMMs. It only reads the existing `phase_1/hmm_params.csv`.
-
-```powershell
-python benchmark_hmm_selection.py
-```
-
-Expected structure:
+The integrated implementation is maintained on:
 
 ```text
-Filtered HMM candidate rows: ...
-Old selector rows: ...
-New selector rows: 2
+WQfinalproject
 ```
 
-### 3. Regenerate best HMM parameters
+Push updates with:
 
-```powershell
-python p1_1_best_params.py
-type phase_1\best_params.csv
-```
-
-Expected current output:
-
-```csv
-N_STATES,SEED,MIN_COUNT
-2,607953,304
-4,46920,41
-```
-
-### 4. Run HMM labeling only
-
-```powershell
-python p1_2_hmm.py
-```
-
-This regenerates HMM-labeled stock-return files and transition matrices in `phase_1/`.
-
-### 5. Visualize fixed-vs-dynamic transitions
-
-This does not train WGAN. It compares the old fixed HMM transition matrix with the new dynamic transition model.
-
-```powershell
-python p1_5_transition_comparison.py
-```
-
-Open the generated images in:
-
-```text
-phase_1\transition_comparison\
-```
-
-## Running The Full Pipeline
-
-The full orchestration is:
-
-```powershell
-python p0_0_orchestration.py
-```
-
-Warning: this can be very slow and disk-heavy because WGAN training runs over multiple combinations of:
-
-```text
-N_STATES = 1, 2, 4
-N_STOCKS = 8, 16, 32, 64
-```
-
-For development, start with individual scripts and the smallest case first.
-
-## Important Notes
-
-- The HMM phase is improved and documented.
-- The WGAN training loop has not yet been optimized.
-- The full model may produce different downstream plots if later phases are rerun, because the HMM best seed is now selected deterministically rather than by accidental row order.
-- Methodologically, the project still follows the HMM-WGAN framework from the publication.
-
-## GitHub Tracking
-
-This repository is configured to track source code and configuration files, not generated research artifacts.
-
-Useful Git commands:
-
-```powershell
-git status
-git log --oneline -5
-git branch
-```
-
-Push the current branch:
-
-```powershell
-git push -u origin WQfinalproject
+```bash
+git push origin WQfinalproject
 ```

@@ -9,16 +9,27 @@ from pandas import Series
 from pathlib import Path
 from project_config import BASE_DIR, INPUT_DIR
 
-def p3_2_stat_prop_mv(n_states=1, n_stocks=8):
+def p3_2_stat_prop_mv(
+        n_states=1,
+        n_stocks=8,
+        stock_rets_path=None,
+        sim_rets_path=None,
+        output_dir=None,
+        train_date=None,
+        output_suffix=None):
     SEED = 42
-    TRAIN_DATE = '2009-06-02'
-    FOLDER = BASE_DIR / 'stylized_facts'
+    TRAIN_DATE = train_date or '2009-06-02'
+    FOLDER = Path(output_dir) if output_dir else BASE_DIR / 'stylized_facts'
 
     set_random_seed(SEED)
     seterr(divide='ignore', invalid='ignore')
 
-    stock_rets = read_csv(BASE_DIR / f'phase_2/stock_rets_q{n_states}_n{n_stocks}.csv', index_col=[0], parse_dates=[0])
-    sim_rets = read_csv(BASE_DIR / f'simulations/sim_rets_q{n_states}_n{n_stocks}.csv', index_col=[0], parse_dates=[0])
+    stock_rets = read_csv(
+        stock_rets_path or BASE_DIR / f'phase_2/stock_rets_q{n_states}_n{n_stocks}.csv',
+        index_col=[0], parse_dates=[0])
+    sim_rets = read_csv(
+        sim_rets_path or BASE_DIR / f'simulations/sim_rets_q{n_states}_n{n_stocks}.csv',
+        index_col=[0], parse_dates=[0])
 
     n_train = sum(stock_rets.index < TRAIN_DATE)
     real_rets = stock_rets[n_train:].drop('STATE', axis=1)
@@ -124,12 +135,13 @@ def p3_2_stat_prop_mv(n_states=1, n_stocks=8):
         close()
 
     Path(FOLDER).mkdir(parents=True, exist_ok=True)
+    suffix = f'_{output_suffix}' if output_suffix else ''
     for i_rets, n_rets in iter(enumerate(['r', 's'])):
-        plt_corr[i_rets].savefig(FOLDER / f'plt_{n_rets}_mv_c_q{n_states}_n{n_stocks}.pdf', bbox_inches='tight')
-        plt_eig_vals[i_rets].savefig(FOLDER / f'plt_{n_rets}_mv_val_q{n_states}_n{n_stocks}.pdf', bbox_inches='tight')
-        plt_eig_vecs[i_rets].savefig(FOLDER / f'plt_{n_rets}_mv_vec_q{n_states}_n{n_stocks}.pdf', bbox_inches='tight')
-        plt_h_clusts[i_rets].savefig(FOLDER / f'plt_{n_rets}_mv_hc_q{n_states}_n{n_stocks}.pdf', bbox_inches='tight')
-        plt_node_degree[i_rets].savefig(FOLDER / f'plt_{n_rets}_mv_nd_q{n_states}_n{n_stocks}.pdf', bbox_inches='tight')
+        plt_corr[i_rets].savefig(FOLDER / f'plt_{n_rets}_mv_c_q{n_states}_n{n_stocks}{suffix}.pdf', bbox_inches='tight')
+        plt_eig_vals[i_rets].savefig(FOLDER / f'plt_{n_rets}_mv_val_q{n_states}_n{n_stocks}{suffix}.pdf', bbox_inches='tight')
+        plt_eig_vecs[i_rets].savefig(FOLDER / f'plt_{n_rets}_mv_vec_q{n_states}_n{n_stocks}{suffix}.pdf', bbox_inches='tight')
+        plt_h_clusts[i_rets].savefig(FOLDER / f'plt_{n_rets}_mv_hc_q{n_states}_n{n_stocks}{suffix}.pdf', bbox_inches='tight')
+        plt_node_degree[i_rets].savefig(FOLDER / f'plt_{n_rets}_mv_nd_q{n_states}_n{n_stocks}{suffix}.pdf', bbox_inches='tight')
 
 
 if __name__ == '__main__':

@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 .venv/
+.venv-*/
 .wqvenv/
 venv/
 env/
@@ -25,6 +26,9 @@ phase_2/
 simulations/
 stylized_facts/
 risk_management/
+run_outputs/
+logs/
+runsummary.dat
 
 # Reports and archives generated or bundled outside source code
 *.pdf

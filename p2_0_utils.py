@@ -10,26 +10,41 @@ import tensorflow as tf
 from project_config import BASE_DIR, INPUT_DIR
 
 class Maxout(tf.keras.layers.Layer):
+    """Parameter-free replacement for tensorflow_addons.layers.Maxout.
+
+    TensorFlow Addons Maxout groups the existing final-axis features and takes
+    the maximum within each group.  It does not add a Dense projection.  Keeping
+    that behavior is important here because the critic already contains the
+    4096-feature Dense layer used by the original implementation.
     """
-    Drop-in replacement for tensorflow_addons.layers.Maxout
-    - units: number of maxout output units
-    - pieces: number of linear pieces per unit (TFA default is often 2; we set 2)
-    """
-    def __init__(self, units, pieces=2, **kwargs):
+
+    def __init__(self, units, **kwargs):
         super().__init__(**kwargs)
         self.units = int(units)
-        self.pieces = int(pieces)
-        self.dense = tf.keras.layers.Dense(self.units * self.pieces)
 
     def call(self, inputs):
-        x = self.dense(inputs)
-        # reshape to (batch, units, pieces) and max over pieces
-        x = tf.reshape(x, (-1, self.units, self.pieces))
-        return tf.reduce_max(x, axis=-1)
+        feature_count = inputs.shape[-1]
+        if feature_count is None:
+            raise ValueError("Maxout requires a statically known feature dimension.")
+        if int(feature_count) % self.units:
+            raise ValueError(
+                f"Input feature count {feature_count} is not divisible by "
+                f"the requested {self.units} maxout units."
+            )
+        pieces = int(feature_count) // self.units
+        output_shape = tf.concat(
+            [
+                tf.shape(inputs)[:-1],
+                tf.constant([self.units, pieces], dtype=tf.int32),
+            ],
+            axis=0,
+        )
+        grouped = tf.reshape(inputs, output_shape)
+        return tf.reduce_max(grouped, axis=-1)
 
     def get_config(self):
         cfg = super().get_config()
-        cfg.update({"units": self.units, "pieces": self.pieces})
+        cfg.update({"units": self.units})
         return cfg
 
 def stock_load(data_path, n_stocks):
@@ -78,12 +93,17 @@ def generator(z_dim, n_stocks):
 
 
 def grad_penalty(real_data, fake_data, c_model):
-    eps = random.uniform((len(real_data), 1))
+    interpolation_shape = tf.stack([
+        tf.shape(real_data)[0],
+        tf.constant(1, dtype=tf.int32),
+    ])
+    eps = random.uniform(interpolation_shape, dtype=real_data.dtype)
     est = eps * real_data + (1 - eps) * fake_data
 
     with GradientTape() as tape:
         tape.watch(est)
-        c_est = c_model(est)
+        # Match the critic mode used for the real and generated scores.
+        c_est = c_model(est, training=False)
 
     grad = tape.gradient(c_est, est)
     return reduce_mean(square(norm(grad, axis=1) - 1))

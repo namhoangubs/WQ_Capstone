@@ -9,19 +9,31 @@ from matplotlib.pyplot import legend
 from pathlib import Path
 from project_config import BASE_DIR, INPUT_DIR
 
-def p3_1_stat_prop(n_states=1, n_stocks=8):
+def p3_1_stat_prop(
+        n_states=1,
+        n_stocks=8,
+        stock_rets_path=None,
+        sim_rets_path=None,
+        stock_px_path=None,
+        output_dir=None,
+        train_date=None,
+        output_suffix=None):
     SEED = 42
-    TRAIN_DATE = '2009-06-02'
+    TRAIN_DATE = train_date or '2009-06-02'
     THETA = 0.1
     MAX_VALUE = 100000
-    FOLDER = BASE_DIR / 'stylized_facts'
+    FOLDER = Path(output_dir) if output_dir else BASE_DIR / 'stylized_facts'
 
     set_random_seed(SEED)
     seterr(divide='ignore', invalid='ignore')
 
-    stock_px = read_csv(INPUT_DIR / 'STOCKS.csv', index_col=[0], parse_dates=[0])
-    stock_rets = read_csv(BASE_DIR / f'phase_2/stock_rets_q{n_states}_n{n_stocks}.csv', index_col=[0], parse_dates=[0])
-    sim_rets = read_csv(BASE_DIR / f'simulations/sim_rets_q{n_states}_n{n_stocks}.csv', index_col=[0], parse_dates=[0])
+    stock_px = read_csv(stock_px_path or INPUT_DIR / 'STOCKS.csv', index_col=[0], parse_dates=[0])
+    stock_rets = read_csv(
+        stock_rets_path or BASE_DIR / f'phase_2/stock_rets_q{n_states}_n{n_stocks}.csv',
+        index_col=[0], parse_dates=[0])
+    sim_rets = read_csv(
+        sim_rets_path or BASE_DIR / f'simulations/sim_rets_q{n_states}_n{n_stocks}.csv',
+        index_col=[0], parse_dates=[0])
 
     n_train = sum(stock_rets.index < TRAIN_DATE)
     real_rets = stock_rets[n_train:].drop('STATE', axis=1)
@@ -228,17 +240,18 @@ def p3_1_stat_prop(n_states=1, n_stocks=8):
         close()
 
     Path(FOLDER).mkdir(parents=True, exist_ok=True)
+    suffix = f'_{output_suffix}' if output_suffix else ''
     for i_rets, n_rets in iter(enumerate(['r', 's'])):
-        open(FOLDER / f'plt_{n_rets}_p_law_q{n_states}_n{n_stocks}.txt', 'w').write(
+        (FOLDER / f'plt_{n_rets}_p_law_q{n_states}_n{n_stocks}{suffix}.txt').write_text(
             '\n'.join(['Power Law Exponents\n',
                        f'Heavy-Tailed Distribution: {p_law_exps_pr[i_rets]}',
-                       f'Volatility Clustering: {p_law_exps_vc[i_rets]}']))
-        plt_auto_corrs[i_rets].savefig(FOLDER / f'plt_{n_rets}_ac_q{n_states}_n{n_stocks}.pdf', bbox_inches='tight')
-        plt_prob_rets[i_rets].savefig(FOLDER / f'plt_{n_rets}_pr_q{n_states}_n{n_stocks}.pdf', bbox_inches='tight')
-        plt_vol_corrs[i_rets].savefig(FOLDER / f'plt_{n_rets}_vc_q{n_states}_n{n_stocks}.pdf', bbox_inches='tight')
-        plt_lev_corrs[i_rets].savefig(FOLDER / f'plt_{n_rets}_lc_q{n_states}_n{n_stocks}.pdf', bbox_inches='tight')
-        plt_cf_vol_corrs[i_rets].savefig(FOLDER / f'plt_{n_rets}_cfv_q{n_states}_n{n_stocks}.pdf', bbox_inches='tight')
-        plt_gains_losses[i_rets].savefig(FOLDER / f'plt_{n_rets}_gl_q{n_states}_n{n_stocks}.pdf', bbox_inches='tight')
+                       f'Volatility Clustering: {p_law_exps_vc[i_rets]}']), encoding='utf-8')
+        plt_auto_corrs[i_rets].savefig(FOLDER / f'plt_{n_rets}_ac_q{n_states}_n{n_stocks}{suffix}.pdf', bbox_inches='tight')
+        plt_prob_rets[i_rets].savefig(FOLDER / f'plt_{n_rets}_pr_q{n_states}_n{n_stocks}{suffix}.pdf', bbox_inches='tight')
+        plt_vol_corrs[i_rets].savefig(FOLDER / f'plt_{n_rets}_vc_q{n_states}_n{n_stocks}{suffix}.pdf', bbox_inches='tight')
+        plt_lev_corrs[i_rets].savefig(FOLDER / f'plt_{n_rets}_lc_q{n_states}_n{n_stocks}{suffix}.pdf', bbox_inches='tight')
+        plt_cf_vol_corrs[i_rets].savefig(FOLDER / f'plt_{n_rets}_cfv_q{n_states}_n{n_stocks}{suffix}.pdf', bbox_inches='tight')
+        plt_gains_losses[i_rets].savefig(FOLDER / f'plt_{n_rets}_gl_q{n_states}_n{n_stocks}{suffix}.pdf', bbox_inches='tight')
 
 
 if __name__ == '__main__':

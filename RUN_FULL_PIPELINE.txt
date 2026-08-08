@@ -1,0 +1,154 @@
+RUNNING THE FULL PIPELINE
+=========================
+
+Purpose
+-------
+This run executes Phase 1 and the later phase in sequence. It selects/refits
+the q4 HMM and one dynamic transition model, creates the later-phase registry,
+trains rolling WGANs, simulates portfolios, calculates risk metrics, and
+aggregates the fixed-versus-dynamic comparison.
+
+Prerequisites
+-------------
+1. Open PowerShell or Anaconda Prompt in the repository root.
+2. Activate an environment containing Python, TensorFlow/Keras, pandas, numpy,
+   scipy, scikit-learn, statsmodels, hmmlearn, joblib, and matplotlib.
+3. Confirm that the required raw and processed inputs exist:
+
+   Inputs/STOCKS.csv
+   Inputs/STOCK_STATUS_1999.csv
+   Inputs/STOCK_STATUS_2023.csv
+   processed/exog_rets.csv
+   processed/stock_rets.csv
+
+4. Confirm that the Phase 1 model-selection reports and q4 reference files
+   exist under phase_1/.
+
+Configuration
+-------------
+Open pipeline_config.json and set:
+
+    "run_scope": "full"
+
+The default model policy is:
+
+    dynamic_model_selection = auto_best_validation
+
+This compares the eligible dynamic candidates using validation log loss,
+then uses model complexity and Brier score as configured tie-breakers. The
+fixed HMM transition is always retained as the baseline.
+
+Selecting one specific dynamic model
+------------------------------------
+To force a specific dynamic model to be selected by the Phase 1 run, edit
+phase_1_model_specifications.csv. Keep the fixed transition row and the
+desired dynamic-model row enabled. Set enabled=false for the other dynamic
+models. Do not delete rows.
+
+Use these exact model_id values:
+
+    Original MLR                         dynamic_duration_logit
+    P/VIF MLR                            pvalue_vif_selected_mlr
+    Original Regularized MLG             multinomial_logistic_gam
+    Group-Weighted MLG                   group_weighted_multinomial_logistic_gam
+    Duration-Free SI-MLG                 state_interaction_multinomial_logistic_gam
+
+For Group-Weighted MLG, the relevant settings in
+phase_1_model_specifications.csv are:
+
+    fixed_hmm_transition: enabled=true, eligible_for_full_selection=false
+    group_weighted_multinomial_logistic_gam: enabled=true,
+        eligible_for_full_selection=true
+
+For Original Regularized MLG, use:
+
+    multinomial_logistic_gam: enabled=true,
+        eligible_for_full_selection=true
+
+For any other model, use its exact model_id from the table and set its
+enabled=true and eligible_for_full_selection=true. Set enabled=false and
+eligible_for_full_selection=false for every other dynamic model.
+
+The fixed row must remain:
+
+    fixed_hmm_transition: enabled=true,
+        eligible_for_full_selection=false
+
+Do not change only the display_name. The model_id, enabled value, eligibility
+flag, and generated production artifacts must refer to the same model.
+
+The Phase 1 run will generate the correct fitted-model artifacts and
+selected_models_for_later_phases_q4.csv. Do not manually edit that registry
+after a successful Phase 1 run.
+
+Dry run
+-------
+
+    C:\Users\namho\anaconda3\python.exe run_pipeline.py --config pipeline_config.json --dry-run
+
+This validates the configuration, available candidate reports, portfolio
+settings, and expected selected candidate. It does not calibrate models or
+train WGANs.
+
+Execute the full pipeline
+-------------------------
+
+    C:\Users\namho\anaconda3\python.exe run_pipeline.py --config pipeline_config.json
+
+Execution sequence
+------------------
+1. Phase 1 selects the dynamic candidate using validation data.
+2. The q4 HMM is refit through the configured validation cutoff, with stable
+   random-restart screening and canonical state-label mapping.
+3. The selected dynamic model is refit using the configured training plus
+   validation period.
+4. Fixed and dynamic daily transition probabilities are generated and saved.
+5. Exact portfolio memberships are created under:
+
+   run_outputs/portfolio_manifests/
+
+   The default balanced_low_overlap design creates 10 portfolios of 50 stocks
+   from the eligible universe while making each stock appear as evenly as
+   possible across portfolios. portfolio_overlap_matrix.csv and
+   portfolio_stock_inclusion_frequency.csv document the resulting overlap and
+   inclusion counts.
+
+6. For each portfolio, four state-specific WGANs are trained initially and
+   updated through the warm-up period using adaptive regime memory. Each state
+   starts with a 256-row lookback, expands backward when needed, applies a
+   256-trading-day exponential half-life, and updates only at weighted ESS >= 64.
+7. From the forecast start date, fixed and dynamic transition probabilities
+   drive paired simulations using common random numbers.
+8. VaR, ES/CVaR, exceedance tests, quantile loss, joint VaR/ES loss, stress
+   metrics, and original-paper diagnostics are calculated.
+9. Portfolio results are aggregated into the final scorecard.
+
+Main outputs
+------------
+Phase 1 handoff files are written under:
+
+    phase_1/production_q4/
+
+Per-portfolio later-phase files are written under:
+
+    run_outputs/portfolio_XX/
+
+Final aggregate files are written under:
+
+    run_outputs/aggregate_comparison/
+
+The final run summary is:
+
+    run_outputs/run_summary.json
+
+Resume behavior
+---------------
+The default configuration resumes completed portfolios when SUCCESS.json is
+present. It does not overwrite incomplete output folders unless:
+
+    "overwrite_existing_outputs": true
+
+For a small smoke test, limit the number of portfolios without changing the
+squad of saved manifests:
+
+    C:\Users\namho\anaconda3\python.exe run_pipeline.py --config pipeline_config.json --portfolio-limit 1

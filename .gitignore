@@ -29,6 +29,7 @@ risk_management/
 run_outputs/
 logs/
 runsummary.dat
+slurm/
 
 # Reports and archives generated or bundled outside source code
 *.pdf

@@ -262,13 +262,19 @@ Aggregation requires all ten configured portfolios and refuses partial sets.
 
 ## Athena / PLGrid Execution
 
-The repository includes production scripts for one A100 per portfolio:
+The local Athena deployment uses production scripts for one A100 per
+portfolio:
 
 ```text
 slurm/athena_full_array.slurm
 slurm/athena_aggregate.slurm
 slurm/athena_postprocessing_check.slurm
 ```
+
+The `slurm/` directory is intentionally excluded from Git because its account,
+partition, paths, and allocation settings are deployment-specific. The
+commands below assume those local scripts are present in the Athena working
+copy.
 
 The production array requests, per task:
 
@@ -438,7 +444,7 @@ fixed-versus-dynamic experiment and Athena execution.
 | `p1_*.py` | HMM and dynamic transition model implementations. |
 | `p2_0_utils.py` | WGAN networks, Maxout, gradient penalty, and stopping rules. |
 | `p3_*.py` | Original simulation and diagnostic implementations. |
-| `slurm/` | Generic and Athena-specific batch scripts. |
+| `slurm/` | Local Athena batch scripts; intentionally excluded from Git. |
 | `docs/` | GitHub-visible reference result snapshots. |
 | `phase_1_model_specifications.csv` | Candidate enablement and selection policy. |
 | `pipeline_config.json` | Production experiment configuration. |
@@ -456,7 +462,8 @@ fixed-versus-dynamic experiment and Athena execution.
 - All simulation paths are not stored; daily distribution summaries and one
   representative stock-return vector per transition model are retained.
 - `run_outputs/`, environments, logs, checkpoints, archives, inputs, generated
-  Phase 1 artifacts, and other large research outputs are excluded from Git.
+  Phase 1 artifacts, deployment-specific SLURM scripts, and other large
+  research outputs are excluded from Git.
 - Use the same Python, TensorFlow, CUDA, dependency versions, hardware class,
   configuration, manifests, and random seeds for reproducible reruns.
 

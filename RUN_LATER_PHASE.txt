@@ -113,6 +113,53 @@ half-life. The WGAN updates only when weighted ESS is at least 64; otherwise it
 retains its last valid weights. The forecast-date return is never used in that
 date's update.
 
+Dynamic Scale experiment (dynamic model only)
+---------------------------------------------
+Use pipeline_config_dynamic_scale.json to run only the selected Group-Weighted
+MLG transition model with Dynamic Scale. This configuration does not simulate
+the fixed-transition or normal benchmark again. It imports the preserved fixed
+scores from baseline_fixed_transition only after confirming that forecast dates
+and realized portfolio returns match exactly.
+
+To retain common random numbers with the preserved run, the dynamic-only path
+also advances the simulation generator by the normal-benchmark draw that the
+earlier run consumed after each forecast date. The values are discarded and no
+normal benchmark is recalculated or saved.
+
+The volatility filter fits zero-mean Student-t GJR-GARCH(1,1) models using data
+through 2016. Out of sample, parameters remain fixed while conditional variance
+is updated causally each day. Numerical fitting falls back to Student-t
+GARCH(1,1), then EWMA. The WGAN learns standardized residuals with a linear
+output layer; each generated stock residual is multiplied by its date-specific
+conditional volatility before portfolio returns and risk measures are computed.
+
+Install the additional volatility dependency before this run:
+
+    C:\Users\namho\anaconda3\python.exe -m pip install -r requirements.txt
+
+Validate without fitting or simulation:
+
+    C:\Users\namho\anaconda3\python.exe run_pipeline.py --config pipeline_config_dynamic_scale.json --dry-run
+
+Prepare and cache the volatility filters without training WGANs:
+
+    C:\Users\namho\anaconda3\python.exe run_pipeline.py --config pipeline_config_dynamic_scale.json --prepare-only
+
+Run one portfolio first as the technical smoke run:
+
+    C:\Users\namho\anaconda3\python.exe run_pipeline.py --config pipeline_config_dynamic_scale.json --portfolio-id 1
+
+Run all ten portfolios after reviewing portfolio 1:
+
+    C:\Users\namho\anaconda3\python.exe run_pipeline.py --config pipeline_config_dynamic_scale.json
+
+New outputs are isolated under run_outputs_dynamic_scale. Conditional
+volatilities, standardized residuals, fitted-model diagnostics, and cache
+metadata are under run_outputs_dynamic_scale/volatility_cache. Each portfolio
+also contains dynamic_scale_daily_summary.csv. The aggregate folder combines
+the new dynamic scores with the preserved fixed baseline; the original fixed
+outputs are never overwritten.
+
 Dry run
 -------
 

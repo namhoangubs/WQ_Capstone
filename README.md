@@ -190,6 +190,9 @@ processed/stock_rets.csv
 
 Generated Phase 1 artifacts are written below `phase_1/`. Large inputs,
 outputs, environments, logs, weights, PDFs, and archives are ignored by Git.
+The Dynamic Scale configuration additionally requires the local
+`phase_1/production_q4/` handoff, selected-model registry, and
+`baseline_fixed_transition/` benchmark copied from the completed experiment.
 
 ## Local Validation
 
@@ -198,7 +201,7 @@ Validate syntax:
 ```bash
 python -m py_compile \
   run_pipeline.py pipeline_phase1.py pipeline_runtime.py \
-  pipeline_risk.py pipeline_wgan.py p2_0_utils.py \
+  pipeline_risk.py pipeline_volatility.py pipeline_wgan.py p2_0_utils.py \
   validate_optimized_portfolio.py \
   verify_optimized_wgan_runtime.py \
   verify_postprocessing_runtime.py
@@ -208,14 +211,16 @@ Run the lightweight tests:
 
 ```bash
 python -m unittest -v \
+  test_pipeline_dynamic_scale.py \
   test_pipeline_wgan_adaptive_memory.py \
   test_pipeline_portfolio_sampling.py \
   test_validate_optimized_portfolio.py
 ```
 
-The current suite contains 11 tests covering adaptive memory, ESS gating,
-causality, deterministic balanced portfolios, manifest diagnostics, strict CSV
-boolean parsing, and production-output validation.
+The current focused suite contains 16 tests covering Dynamic Scale causality
+and reconstruction, fixed-baseline pairing, adaptive memory, ESS gating,
+deterministic balanced portfolios, manifest diagnostics, strict CSV boolean
+parsing, and production-output validation.
 
 ## Pipeline Commands
 
@@ -259,6 +264,32 @@ python run_pipeline.py \
 ```
 
 Aggregation requires all ten configured portfolios and refuses partial sets.
+
+### Run the Dynamic Scale experiment
+
+`pipeline_config_dynamic_scale.json` is a separate later-phase experiment for
+the selected Group-Weighted MLG only. It trains the WGAN on volatility-standardized
+returns, applies causal daily GJR-GARCH scaling to simulated residuals, and imports
+the preserved fixed-transition scores for comparison instead of rerunning that
+baseline.
+
+```bash
+python run_pipeline.py \
+  --config pipeline_config_dynamic_scale.json \
+  --dry-run
+
+python run_pipeline.py \
+  --config pipeline_config_dynamic_scale.json \
+  --prepare-only
+
+python run_pipeline.py \
+  --config pipeline_config_dynamic_scale.json \
+  --portfolio-id 1
+```
+
+The dedicated outputs are written under `run_outputs_dynamic_scale/`. See
+`RUN_LATER_PHASE.txt` for the full ten-portfolio command, fixed-baseline pairing
+checks, volatility fallbacks, and generated files.
 
 ## Athena / PLGrid Execution
 
@@ -449,6 +480,8 @@ fixed-versus-dynamic experiment and Athena execution.
 | `phase_1_model_specifications.csv` | Candidate enablement and selection policy. |
 | `pipeline_config.json` | Production experiment configuration. |
 | `pipeline_config_smoke.json` | Small functional-test configuration. |
+| `pipeline_config_dynamic_scale.json` | Dynamic-only Group-Weighted MLG plus causal volatility scaling experiment. |
+| `pipeline_volatility.py` | GJR-GARCH filtering, fallbacks, cache validation, and standardized-return artifacts. |
 | `requirements-athena.txt` | Integrated Linux/Athena dependencies. |
 | `ATHENA_SUBMISSION_RUNBOOK.md` | Step-by-step production runbook. |
 

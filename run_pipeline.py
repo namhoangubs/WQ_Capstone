@@ -8,6 +8,7 @@ import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from pipeline_phase1 import run_phase_1_production
@@ -33,12 +34,63 @@ def _write_json(path, value):
         json.dump(value, handle, indent=2, default=str)
 
 
+def _existing_fixed_scores(config, result):
+    comparison = config.get("comparison", {})
+    if not comparison.get("import_existing_fixed_results", False):
+        return None
+    sample_id = int(result["sample_id"])
+    baseline_root = resolve_project_path(
+        comparison["fixed_results_directory"], config["_project_root"]
+    )
+    baseline_dir = baseline_root / f"portfolio_{sample_id:02d}"
+    scores_path = baseline_dir / "risk_scores.csv"
+    forecasts_path = baseline_dir / "daily_risk_forecasts.csv"
+    if not scores_path.exists() or not forecasts_path.exists():
+        raise FileNotFoundError(
+            f"Fixed baseline files are missing for portfolio {sample_id}: {baseline_dir}"
+        )
+
+    dynamic_forecasts = pd.read_csv(
+        Path(result["output_dir"]) / "daily_risk_forecasts.csv",
+        parse_dates=["DATE"],
+    )
+    baseline_forecasts = pd.read_csv(forecasts_path, parse_dates=["DATE"])
+    baseline_forecasts = baseline_forecasts[
+        baseline_forecasts["MODEL_ID"].eq("fixed_hmm_transition")
+    ].sort_values("DATE")
+    dynamic_forecasts = dynamic_forecasts.sort_values("DATE")
+    if not baseline_forecasts["DATE"].reset_index(drop=True).equals(
+        dynamic_forecasts["DATE"].reset_index(drop=True)
+    ):
+        raise ValueError(
+            f"Fixed and dynamic forecast dates differ for portfolio {sample_id}."
+        )
+    if not np.allclose(
+        baseline_forecasts["REALIZED_RETURN"].to_numpy(dtype=float),
+        dynamic_forecasts["REALIZED_RETURN"].to_numpy(dtype=float),
+        rtol=0.0,
+        atol=1e-12,
+    ):
+        raise ValueError(
+            f"Fixed and dynamic realized returns differ for portfolio {sample_id}."
+        )
+
+    scores = pd.read_csv(scores_path)
+    fixed = scores[scores["MODEL_ID"].eq("fixed_hmm_transition")].copy()
+    if fixed.empty:
+        raise ValueError(f"No fixed baseline scores found for portfolio {sample_id}.")
+    return fixed
+
+
 def _aggregate_completed_outputs(config, results):
     score_frames = []
     for result in results:
         path = Path(result["scores_path"])
         if path.exists():
             score_frames.append(pd.read_csv(path))
+            fixed = _existing_fixed_scores(config, result)
+            if fixed is not None:
+                score_frames.append(fixed)
     if not score_frames:
         return None
     output_root = resolve_project_path(
@@ -79,7 +131,11 @@ def _completed_portfolio_results(config):
             sample_id = int(output_dir.name.rsplit("_", 1)[1])
         except (IndexError, ValueError):
             continue
-        results.append({"sample_id": sample_id, "scores_path": scores_path})
+        results.append({
+            "sample_id": sample_id,
+            "output_dir": output_dir,
+            "scores_path": scores_path,
+        })
     return results
 
 
@@ -163,6 +219,11 @@ def execute_pipeline(
         else validate_selected_registry(config)
     )
     manifests = create_or_load_portfolio_manifests(config, write=True)
+    volatility_artifacts = None
+    if config.get("dynamic_scale", {}).get("enabled", False):
+        from pipeline_volatility import prepare_dynamic_scale_artifacts
+
+        volatility_artifacts = prepare_dynamic_scale_artifacts(config, registry)
     if prepare_only:
         return {
             "status": "complete",
@@ -171,6 +232,7 @@ def execute_pipeline(
                 registry.loc[registry["role"].eq("dynamic"), "model_id"].iloc[0]
             ),
             "prepared_portfolios": [int(frame["SAMPLE_ID"].iloc[0]) for frame in manifests],
+            "dynamic_scale_artifacts": volatility_artifacts,
         }
     if portfolio_id is not None:
         manifests = [

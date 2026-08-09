@@ -112,6 +112,89 @@ def load_pipeline_config(path=BASE_DIR / "pipeline_config.json"):
         simulation.get("paired_random_numbers_across_models") is True,
         "Paired random numbers are required for model comparisons.",
     )
+    transition_models = simulation.get("transition_models", ["fixed", "dynamic"])
+    _require(
+        bool(transition_models)
+        and set(transition_models).issubset({"fixed", "dynamic"}),
+        "simulation.transition_models must contain fixed and/or dynamic.",
+    )
+    dynamic_scale = config.get("dynamic_scale", {})
+    if dynamic_scale.get("enabled", False):
+        _require(
+            transition_models == ["dynamic"],
+            "The Dynamic Scale experiment must run only the dynamic transition model.",
+        )
+        _require(
+            simulation.get("include_normal_benchmark") is False,
+            "The Dynamic Scale experiment disables the normal benchmark simulation.",
+        )
+        _require(
+            simulation.get("replay_fixed_baseline_rng_sequence") is True,
+            "Dynamic Scale must replay the preserved baseline RNG sequence.",
+        )
+        _require(
+            dynamic_scale.get("model") == "gjr_garch_1_1",
+            "dynamic_scale.model must be gjr_garch_1_1.",
+        )
+        _require(
+            dynamic_scale.get("innovation_distribution") == "student_t",
+            "Dynamic Scale requires Student-t volatility estimation.",
+        )
+        _require(
+            dynamic_scale.get("conditional_mean") == "zero",
+            "Dynamic Scale currently requires a zero conditional mean.",
+        )
+        _require(
+            dynamic_scale.get("fallback_order")
+            == ["gjr_garch_t", "garch_t", "ewma"],
+            "Dynamic Scale fallback order must be GJR-GARCH-t, GARCH-t, EWMA.",
+        )
+        _require(
+            0.0 < float(dynamic_scale.get("ewma_decay", 0.0)) < 1.0,
+            "dynamic_scale.ewma_decay must be between zero and one.",
+        )
+        _require(
+            float(dynamic_scale.get("variance_floor", 0.0)) > 0.0,
+            "dynamic_scale.variance_floor must be positive.",
+        )
+        _require(
+            0.0 < float(dynamic_scale.get("maximum_persistence", 0.0)) <= 1.0,
+            "dynamic_scale.maximum_persistence must be in (0, 1].",
+        )
+        _require(
+            dynamic_scale.get("fit_end_exclusive")
+            == config["data"]["validation_end_exclusive"],
+            "Dynamic Scale production fitting must end at the validation cutoff.",
+        )
+        _require(
+            dynamic_scale.get("validation_fit_end_exclusive")
+            == config["data"]["initial_train_end_exclusive"],
+            "Dynamic Scale validation fitting must end at the initial cutoff.",
+        )
+        _require(
+            dynamic_scale.get("validation_end_exclusive")
+            == config["data"]["validation_end_exclusive"],
+            "Dynamic Scale validation must end before the forecast period.",
+        )
+        comparison = config.get("comparison", {})
+        _require(
+            comparison.get("import_existing_fixed_results") is True,
+            "Dynamic-only runs must import existing fixed-transition results.",
+        )
+        fixed_results = resolve_project_path(
+            comparison.get("fixed_results_directory", ""), path.parent
+        )
+        _require(
+            fixed_results.exists(),
+            f"Existing fixed-results directory is missing: {fixed_results}",
+        )
+        for sample_id in range(1, int(sampling["number_of_samples"]) + 1):
+            portfolio_dir = fixed_results / f"portfolio_{sample_id:02d}"
+            for filename in ["risk_scores.csv", "daily_risk_forecasts.csv"]:
+                _require(
+                    (portfolio_dir / filename).exists(),
+                    f"Existing fixed baseline is missing {portfolio_dir / filename}",
+                )
     wgan = config.get("wgan", {})
     _require(
         wgan.get("initial_train_end_exclusive")
@@ -583,6 +666,12 @@ def validate_selected_registry(config, path=None):
     _require(len(registry[registry["role"].eq("baseline")]) == 1, "Registry must contain one baseline row.")
     dynamic = registry[registry["role"].eq("dynamic")]
     _require(len(dynamic) == 1, "Registry must contain exactly one dynamic row.")
+    required_dynamic = config.get("simulation", {}).get("required_dynamic_model_id")
+    if required_dynamic:
+        _require(
+            dynamic.iloc[0]["model_id"] == required_dynamic,
+            "Selected registry does not contain the required dynamic model.",
+        )
     _require(registry["n_states"].astype(int).eq(4).all(), "Registry must contain q4 artifacts only.")
 
     family = str(dynamic.iloc[0].get("model_family", "")).lower()

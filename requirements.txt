@@ -10,3 +10,4 @@ hmmlearn
 tensorflow
 keras
 powerlaw
+arch

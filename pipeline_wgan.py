@@ -19,6 +19,7 @@ from pipeline_risk import (
     score_risk_forecasts,
 )
 from pipeline_runtime import resolve_project_path
+from pipeline_volatility import load_dynamic_scale_frames
 
 
 def _tensorflow_components():
@@ -54,7 +55,22 @@ def _load_portfolio_inputs(config, registry, manifest):
     stock = stock[tickers + ["STATE"]].dropna()
     probabilities = pd.read_csv(probability_path, parse_dates=["FORECAST_DATE"])
     probabilities = probabilities.set_index("FORECAST_DATE").sort_index()
-    return stock, probabilities, tickers
+    conditional_sigma = None
+    training_stock = stock
+    if config.get("dynamic_scale", {}).get("enabled", False):
+        conditional_sigma, residuals = load_dynamic_scale_frames(config, tickers)
+        common = stock.index.intersection(conditional_sigma.index).intersection(
+            residuals.index
+        )
+        if not common.equals(stock.index):
+            missing = stock.index.difference(common)
+            raise ValueError(
+                f"Dynamic-scale cache is missing {len(missing)} stock-return dates."
+            )
+        conditional_sigma = conditional_sigma.loc[stock.index]
+        training_stock = residuals.loc[stock.index].copy()
+        training_stock["STATE"] = stock["STATE"].to_numpy(dtype=int)
+    return stock, training_stock, conditional_sigma, probabilities, tickers
 
 
 def _effective_sample_size(weights):
@@ -359,12 +375,26 @@ def _sample_states(probabilities, uniforms):
     return np.searchsorted(cumulative, uniforms, side="right")
 
 
-def _simulate_portfolio_returns(generators, sampled_states, latent_draws, weights):
+def _simulate_portfolio_returns(
+    generators,
+    sampled_states,
+    latent_draws,
+    weights,
+    conditional_sigma=None,
+):
     simulations = np.empty(len(sampled_states), dtype=float)
     representative = None
+    if conditional_sigma is not None:
+        conditional_sigma = np.asarray(conditional_sigma, dtype=float)
+        if conditional_sigma.shape != weights.shape:
+            raise ValueError("Conditional-volatility and portfolio-weight shapes differ.")
+        if not np.isfinite(conditional_sigma).all() or (conditional_sigma <= 0).any():
+            raise ValueError("Conditional-volatility vector must be finite and positive.")
     for state in np.unique(sampled_states):
         indexes = np.flatnonzero(sampled_states == state)
         generated = generators[int(state)](latent_draws[indexes], training=False).numpy()
+        if conditional_sigma is not None:
+            generated = generated * conditional_sigma
         simulations[indexes] = generated @ weights
         if 0 in indexes:
             representative = generated[np.flatnonzero(indexes == 0)[0]]
@@ -498,7 +528,9 @@ def run_portfolio_pipeline(config, registry, manifest):
     )
     portfolio_started = time.monotonic()
 
-    stock, probabilities, tickers = _load_portfolio_inputs(config, registry, manifest)
+    stock, training_stock, conditional_sigma, probabilities, tickers = (
+        _load_portfolio_inputs(config, registry, manifest)
+    )
     n_states = int(config["phase_1"]["n_regimes"])
     n_stocks = len(tickers)
     weights = manifest.sort_values("POSITION")["WEIGHT"].to_numpy(dtype=float)
@@ -519,8 +551,20 @@ def run_portfolio_pipeline(config, registry, manifest):
         )
 
     networks, optimizers = {}, {}
+    generator_output_activation = (
+        "linear"
+        if config.get("dynamic_scale", {}).get("enabled", False)
+        else "tanh"
+    )
     for state in range(n_states):
-        networks[state] = (critic(n_stocks), generator(int(wgan["latent_dimension"]), n_stocks))
+        networks[state] = (
+            critic(n_stocks),
+            generator(
+                int(wgan["latent_dimension"]),
+                n_stocks,
+                output_activation=generator_output_activation,
+            ),
+        )
         optimizers[state] = (
             Adam(learning_rate=1e-4, beta_1=0.5, beta_2=0.9),
             Adam(learning_rate=1e-4, beta_1=0.5, beta_2=0.9),
@@ -546,11 +590,20 @@ def run_portfolio_pipeline(config, registry, manifest):
     loss_histories = {
         state: deque(maxlen=100) for state in range(n_states)
     }
-    representative = {
-        "fixed_hmm_transition": [],
-        str(registry.loc[registry["role"].eq("dynamic"), "model_id"].iloc[0]): [],
-    }
-    dynamic_id = next(model_id for model_id in representative if model_id != "fixed_hmm_transition")
+    dynamic_id = str(
+        registry.loc[registry["role"].eq("dynamic"), "model_id"].iloc[0]
+    )
+    transition_models = config["simulation"].get(
+        "transition_models", ["fixed", "dynamic"]
+    )
+    model_specs = []
+    if "fixed" in transition_models:
+        model_specs.append(("fixed_hmm_transition", "FIXED"))
+    if "dynamic" in transition_models:
+        model_specs.append((dynamic_id, "DYNAMIC"))
+    if not model_specs:
+        raise ValueError("At least one transition model must be enabled.")
+    representative = {model_id: [] for model_id, _ in model_specs}
     initialized = stock.iloc[:initial_count]
     print(
         f"[portfolio {sample_id:02d}] Initializing {n_states} regime WGANs "
@@ -559,7 +612,7 @@ def run_portfolio_pipeline(config, registry, manifest):
     )
     for state in range(n_states):
         memory = _adaptive_regime_memory(
-            stock,
+            training_stock,
             initial_count,
             state,
             tickers,
@@ -621,7 +674,7 @@ def run_portfolio_pipeline(config, registry, manifest):
         if position > initial_count:
             for state in range(n_states):
                 memory = _adaptive_regime_memory(
-                    stock,
+                    training_stock,
                     position,
                     state,
                     tickers,
@@ -694,17 +747,23 @@ def run_portfolio_pipeline(config, registry, manifest):
             (path_count, int(wgan["latent_dimension"]))
         ).astype(np.float32)
         realized_return = float(stock.loc[date, tickers].to_numpy(dtype=float) @ weights)
-        for model_id, prefix in [
-            ("fixed_hmm_transition", "FIXED"),
-            (dynamic_id, "DYNAMIC"),
-        ]:
+        sigma_vector = (
+            conditional_sigma.loc[date, tickers].to_numpy(dtype=float)
+            if conditional_sigma is not None
+            else None
+        )
+        for model_id, prefix in model_specs:
             probability_vector = np.array(
                 [probability_row[f"{prefix}_P_TO_{state}"] for state in range(n_states)],
                 dtype=float,
             )
             sampled_states = _sample_states(probability_vector, uniforms)
             simulations, representative_return = _simulate_portfolio_returns(
-                generators, sampled_states, latent, weights
+                generators,
+                sampled_states,
+                latent,
+                weights,
+                conditional_sigma=sigma_vector,
             )
             risk_rows.append(
                 _risk_row(date, model_id, realized_return, simulations, levels)
@@ -724,15 +783,21 @@ def run_portfolio_pipeline(config, registry, manifest):
                 for state in range(n_states)
             ])
 
-        normal_window = window[tickers].to_numpy(dtype=float) @ weights
-        normal_simulations = simulation_rng.normal(
-            float(np.mean(normal_window)),
-            float(np.std(normal_window, ddof=1)),
-            path_count,
-        )
-        risk_rows.append(
-            _risk_row(date, "normal", realized_return, normal_simulations, levels)
-        )
+        if config["simulation"].get("include_normal_benchmark", True):
+            normal_window = window[tickers].to_numpy(dtype=float) @ weights
+            normal_simulations = simulation_rng.normal(
+                float(np.mean(normal_window)),
+                float(np.std(normal_window, ddof=1)),
+                path_count,
+            )
+            risk_rows.append(
+                _risk_row(date, "normal", realized_return, normal_simulations, levels)
+            )
+        elif config["simulation"].get("replay_fixed_baseline_rng_sequence", False):
+            # The preserved fixed run simulated a normal benchmark after each
+            # date. Discarding the same draw keeps future uniforms and latent
+            # vectors paired across the old and new experiments.
+            simulation_rng.normal(0.0, 1.0, path_count)
 
     loss_report = pd.DataFrame(loss_rows)
     forecasts = pd.DataFrame(risk_rows)
@@ -753,6 +818,24 @@ def run_portfolio_pipeline(config, registry, manifest):
     for model_id, rows in representative.items():
         pd.DataFrame(rows).set_index("DATE").to_csv(
             output_dir / f"representative_simulated_returns_{model_id}.csv"
+        )
+    if conditional_sigma is not None:
+        forecast_index = pd.DatetimeIndex(
+            pd.to_datetime(forecasts["DATE"]).unique()
+        ).sort_values()
+        forecast_sigma = conditional_sigma.loc[forecast_index, tickers]
+        sigma_summary = pd.DataFrame({
+            "DATE": forecast_sigma.index,
+            "MEAN_STOCK_SIGMA": forecast_sigma.mean(axis=1).to_numpy(),
+            "MEDIAN_STOCK_SIGMA": forecast_sigma.median(axis=1).to_numpy(),
+            "MIN_STOCK_SIGMA": forecast_sigma.min(axis=1).to_numpy(),
+            "MAX_STOCK_SIGMA": forecast_sigma.max(axis=1).to_numpy(),
+            "WEIGHTED_MEAN_STOCK_SIGMA": (
+                forecast_sigma.to_numpy(dtype=float) @ weights
+            ),
+        })
+        sigma_summary.to_csv(
+            output_dir / "dynamic_scale_daily_summary.csv", index=False
         )
     _save_loss_plot(loss_report, output_dir / "wgan_critic_loss.png")
     _save_ess_plot(loss_report, output_dir / "wgan_ess_diagnostics.png")
@@ -791,6 +874,11 @@ def run_portfolio_pipeline(config, registry, manifest):
             "dynamic_model_id": dynamic_id,
             "stock_count": n_stocks,
             "wgan_training_mode": wgan["training_mode"],
+            "dynamic_scale_enabled": bool(
+                config.get("dynamic_scale", {}).get("enabled", False)
+            ),
+            "generator_output_activation": generator_output_activation,
+            "transition_models_run": [model_id for model_id, _ in model_specs],
             "wgan_ess_update_threshold": wgan["regime_memory"][
                 "minimum_effective_sample_size"
             ],
@@ -811,7 +899,9 @@ def run_portfolio_pipeline(config, registry, manifest):
             ) if not applied_rolling.empty else 0.0,
             "forecast_start": str(forecasts["DATE"].min()),
             "forecast_end": str(forecasts["DATE"].max()),
-            "forecast_observations_per_model": int(len(forecasts) / 3),
+            "forecast_observations_per_model": int(
+                len(forecasts) / forecasts["MODEL_ID"].nunique()
+            ),
             "simulation_paths_per_date": path_count,
             "elapsed_seconds": float(time.monotonic() - portfolio_started),
         }, handle, indent=2)

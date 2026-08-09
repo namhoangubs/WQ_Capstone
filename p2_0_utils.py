@@ -78,7 +78,7 @@ def critic(n_stocks):
     return c_net
 
 
-def generator(z_dim, n_stocks):
+def generator(z_dim, n_stocks, output_activation='tanh'):
     g_net = Sequential()
     g_net.add(Input((z_dim,)))
 
@@ -88,7 +88,7 @@ def generator(z_dim, n_stocks):
     g_net.add(Dense(2048, 'tanh'))
     g_net.add(Dense(4096, 'tanh'))
 
-    g_net.add(Dense(n_stocks, 'tanh'))
+    g_net.add(Dense(n_stocks, output_activation))
     return g_net
 
 

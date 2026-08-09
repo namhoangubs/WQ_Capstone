@@ -27,6 +27,8 @@ simulations/
 stylized_facts/
 risk_management/
 run_outputs/
+run_outputs_dynamic_scale/
+baseline_fixed_transition/
 logs/
 runsummary.dat
 slurm/

@@ -1,0 +1,13 @@
+{
+  "sampling_design": "balanced_low_overlap",
+  "random_seed": 42,
+  "eligible_universe_size": 183,
+  "portfolio_count": 10,
+  "stocks_per_portfolio": 50,
+  "total_assignments": 500,
+  "minimum_stock_inclusion_count": 2,
+  "maximum_stock_inclusion_count": 3,
+  "pairwise_overlap_minimum": 10,
+  "pairwise_overlap_mean": 10.022222222222222,
+  "pairwise_overlap_maximum": 11
+}

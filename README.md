@@ -178,21 +178,29 @@ diagnostic packages `powerlaw`, `seaborn`, and `networkx`.
 
 ## Required Data
 
-The following inputs are required but intentionally excluded from Git:
+The Dynamic Scale branch includes the minimum frozen artifact bundle required
+to reproduce the configured later-phase experiment:
 
 ```text
 Inputs/STOCKS.csv
 Inputs/STOCK_STATUS_1999.csv
 Inputs/STOCK_STATUS_2023.csv
-processed/exog_rets.csv
-processed/stock_rets.csv
+phase_1/selected_models_for_later_phases_q4.csv
+phase_1/production_q4/
+baseline_fixed_transition/portfolio_manifests/
+baseline_fixed_transition/portfolio_*/daily_risk_forecasts.csv
+baseline_fixed_transition/portfolio_*/risk_scores.csv
 ```
 
-Generated Phase 1 artifacts are written below `phase_1/`. Large inputs,
-outputs, environments, logs, weights, PDFs, and archives are ignored by Git.
-The Dynamic Scale configuration additionally requires the local
-`phase_1/production_q4/` handoff, selected-model registry, and
-`baseline_fixed_transition/` benchmark copied from the completed experiment.
+The bundled Phase 1 directory contains only the selected q4 Group-Weighted MLG
+handoff and its validation dependencies. The fixed benchmark contains only the
+files needed to pair dates and realized returns and to import fixed-model risk
+scores. All generated Dynamic Scale outputs, volatility caches, environments,
+logs, checkpoints, PDFs, and unrelated source data remain ignored by Git.
+
+This artifact bundle supports the checked-in `later_phases` Dynamic Scale run.
+It does not contain every intermediate dataset needed to recalibrate all Phase
+1 candidate models from raw inputs.
 
 ## Local Validation
 

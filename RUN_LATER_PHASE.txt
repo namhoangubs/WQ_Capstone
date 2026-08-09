@@ -14,17 +14,21 @@ Prerequisites
 1. Open PowerShell or Anaconda Prompt in the repository root.
 2. Activate an environment containing Python, TensorFlow/Keras, pandas, numpy,
    scipy, scikit-learn, statsmodels, hmmlearn, joblib, and matplotlib.
-3. Confirm that the Phase 1 registry exists:
+3. The Dynamic Scale branch already includes the required Phase 1 registry:
 
    phase_1/selected_models_for_later_phases_q4.csv
 
-4. Confirm that the registry points to existing files under:
+4. The registry's selected q4 artifacts are bundled under:
 
    phase_1/production_q4/
 
 The registry must contain exactly one baseline row with model_id
 fixed_hmm_transition and exactly one dynamic row. The dynamic row determines
 which dynamic model is compared with fixed transition.
+
+The branch also includes the exact ten portfolio manifests and the minimum
+fixed-transition forecasts and scores required for paired aggregation. No
+separate artifact copy is required for the checked-in Dynamic Scale run.
 
 Using the existing Group-Weighted MLG handoff
 -----------------------------------------------

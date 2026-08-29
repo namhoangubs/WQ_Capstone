@@ -11,7 +11,7 @@ The current implementation extends the original research code with:
 - production refitting and immutable portfolio manifests;
 - regime-conditional rolling WGAN-GP training;
 - paired Monte Carlo risk forecasts;
-- ten independent 50-stock portfolios;
+- ten balanced, low-overlap 50-stock portfolios;
 - optimized TensorFlow execution on NVIDIA A100 GPUs;
 - strict output validation and SLURM failure handling;
 - an Athena/PLGrid array-job workflow.
@@ -21,6 +21,9 @@ Project members:
 - Co Nguyen
 - Hieu Ha
 - Nam Hoang
+
+Contributor information is also maintained in `CONTRIBUTORS.md` so that it is
+available independently of this project overview.
 
 ## Current Production Experiment
 
@@ -153,8 +156,19 @@ software stack.
 
 ## Installation
 
+For local validation and the legacy research scripts, create an isolated
+environment and install the portable dependency list:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate  # Windows PowerShell: .venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m pip check
+```
+
 The supported production environment is Linux with Python 3.11 and an NVIDIA
-GPU. Athena uses:
+GPU. The Athena GPU environment uses:
 
 ```bash
 module purge
@@ -173,8 +187,12 @@ python -m pip check
 The production dependency list includes TensorFlow CUDA support and the final
 diagnostic packages `powerlaw`, `seaborn`, and `networkx`.
 
-`requirements.txt` is retained for the legacy scripts. Use
-`requirements-athena.txt` for the integrated production pipeline.
+Use `requirements.txt` for local validation and legacy scripts. Use
+`requirements-athena.txt` for the integrated GPU production pipeline because
+it requests TensorFlow CUDA support explicitly. The files declare direct
+dependencies but do not lock every resolved package version; archive the
+environment's `python -m pip freeze` output with a production run when exact
+software-environment reconstruction is required.
 
 ## Required Data
 
@@ -190,6 +208,19 @@ processed/stock_rets.csv
 
 Generated Phase 1 artifacts are written below `phase_1/`. Large inputs,
 outputs, environments, logs, weights, PDFs, and archives are ignored by Git.
+
+### Fresh-clone reproducibility boundary
+
+A source-only clone is sufficient for syntax checks and unit tests, but it is
+not a self-contained production dataset. Before a dry run or model run, place
+the required input files at the paths above. A later-phase-only run also needs
+the validated Phase 1 registry and model artifacts described in
+`RUN_LATER_PHASE.txt`; otherwise, run Phase 1 or the full pipeline first.
+
+Athena account settings and SLURM submission files are deployment-specific and
+are not versioned. Recreate them for the target allocation using the resource
+requirements and commands below. This boundary is intentional, but it means
+that repository access alone does not reproduce the cluster deployment.
 
 ## Local Validation
 
@@ -285,8 +316,8 @@ The production array requests, per task:
 48-hour limit
 ```
 
-Update `PROJECT_DIR`, `VENV_DIR`, account, and partition directives if the
-Athena allocation or project location differs from the checked-in example.
+Set `PROJECT_DIR`, `VENV_DIR`, account, and partition directives in the local
+deployment scripts for the target Athena allocation and project location.
 
 ### Pre-submission checks
 
@@ -446,10 +477,13 @@ fixed-versus-dynamic experiment and Athena execution.
 | `p3_*.py` | Original simulation and diagnostic implementations. |
 | `slurm/` | Local Athena batch scripts; intentionally excluded from Git. |
 | `docs/` | GitHub-visible reference result snapshots. |
+| `CONTRIBUTORS.md` | Project contributor record. |
 | `phase_1_model_specifications.csv` | Candidate enablement and selection policy. |
 | `pipeline_config.json` | Production experiment configuration. |
 | `pipeline_config_smoke.json` | Small functional-test configuration. |
+| `requirements.txt` | Portable dependencies for local validation and legacy scripts. |
 | `requirements-athena.txt` | Integrated Linux/Athena dependencies. |
+| `RUN_PHASE_1.txt`, `RUN_LATER_PHASE.txt`, `RUN_FULL_PIPELINE.txt` | Scope-specific execution guides. |
 | `ATHENA_SUBMISSION_RUNBOOK.md` | Step-by-step production runbook. |
 
 ## Reproducibility and Storage Notes
